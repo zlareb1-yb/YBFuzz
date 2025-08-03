@@ -4,19 +4,47 @@
 # This file defines the SQL grammar used by the generative fuzzer.
 # It is designed to be human-readable and easily extensible.
 
-# --- Top Level Statements ---
+# --- Top Level Statement Types ---
+# The engine now asks for a specific type of statement (DDL, DML, or SELECT)
 statement:
   type: choice
-  options: [select_stmt, create_table_stmt, insert_stmt]
+  options: [ddl_statement, dml_statement, select_stmt]
 
-# --- CREATE TABLE Statement ---
+ddl_statement:
+  type: choice
+  options: [create_table_stmt, create_view_stmt, create_index_stmt]
+
+dml_statement:
+  type: choice
+  options: [insert_stmt, update_stmt, delete_stmt]
+
+# --- DDL Statements ---
 create_table_stmt:
   type: sequence
   elements:
     - { rule: "CREATE TABLE", type: keyword }
-    - { rule: table_name, type: non_terminal }
+    - { rule: new_table_name, type: non_terminal }
     - { rule: "(", type: keyword }
     - { rule: column_definitions, type: non_terminal }
+    - { rule: ")", type: keyword }
+
+create_view_stmt:
+  type: sequence
+  elements:
+    - { rule: "CREATE VIEW", type: keyword }
+    - { rule: new_view_name, type: non_terminal }
+    - { rule: "AS", type: keyword }
+    - { rule: select_stmt, type: non_terminal }
+
+create_index_stmt:
+  type: sequence
+  elements:
+    - { rule: "CREATE INDEX", type: keyword }
+    - { rule: new_index_name, type: non_terminal }
+    - { rule: "ON", type: keyword }
+    - { rule: table_name, type: non_terminal }
+    - { rule: "(", type: keyword }
+    - { rule: column_name, type: non_terminal }
     - { rule: ")", type: keyword }
 
 column_definitions:
@@ -30,7 +58,7 @@ column_definition:
     - { rule: column_name, type: non_terminal }
     - { rule: data_type, type: non_terminal }
 
-# --- INSERT Statement ---
+# --- DML Statements ---
 insert_stmt:
   type: sequence
   elements:
@@ -44,6 +72,22 @@ insert_stmt:
     - { rule: literal_list, type: non_terminal }
     - { rule: ")", type: keyword }
 
+update_stmt:
+  type: sequence
+  elements:
+    - { rule: "UPDATE", type: keyword }
+    - { rule: table_name, type: non_terminal }
+    - { rule: "SET", type: keyword }
+    - { rule: update_assignment, type: non_terminal }
+    - { rule: where_clause, type: non_terminal, optional: true, config_key: "WHERE" }
+
+delete_stmt:
+  type: sequence
+  elements:
+    - { rule: "DELETE FROM", type: keyword }
+    - { rule: table_name, type: non_terminal }
+    - { rule: where_clause, type: non_terminal, optional: true, config_key: "WHERE" }
+
 column_list:
   type: sequence
   elements:
@@ -53,6 +97,13 @@ literal_list:
   type: sequence
   elements:
     - { rule: literal, type: non_terminal, repeatable: true, separator: ", " }
+
+update_assignment:
+  type: sequence
+  elements:
+    - { rule: column_name, type: non_terminal }
+    - { rule: "=", type: keyword }
+    - { rule: expression, type: non_terminal }
 
 # --- SELECT Statement Breakdown ---
 select_stmt:
@@ -160,7 +211,9 @@ comparison_op:
   options: ["=", "<>", "<", "<=", ">", ">="]
 
 # --- Terminals / Placeholders ---
-# These are special rules that the generator resolves dynamically.
+new_table_name: { type: terminal }
+new_view_name: { type: terminal }
+new_index_name: { type: terminal }
 table_name: { type: terminal }
 column_name: { type: terminal }
 data_type: { type: terminal }

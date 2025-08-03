@@ -3,14 +3,14 @@
 # ==========================================================
 
 # --- Run Control ---
-duration: 300                  # Fuzzing duration in seconds
-max_queries: 1000              # Maximum number of queries to generate
-random_seed: null              # Set to an integer for reproducible runs, or null for random
-log_level: INFO                # DEBUG, INFO, WARNING, ERROR
-log_file: "ybfuzz_run.log"       # Main log file
-bug_report_file: "bugs.log"    # File for detailed, structured bug reports
-sql_log_file: "executed_queries.sql" # A clean script for easy reproduction
-catalog_refresh_interval: 20   # How often (in queries) to refresh the DB schema
+duration: 300
+max_sessions: 500 # We now think in terms of sessions, not queries
+random_seed: null
+log_level: INFO
+log_file: "ybfuzz_run.log"
+bug_report_file: "bugs.log"
+sql_log_file: "executed_queries.sql"
+catalog_refresh_interval: 5 # Refresh more often in stateful mode
 
 # --- Database Connection ---
 database:
@@ -22,8 +22,6 @@ database:
   schema_name: "ybfuzz_schema"
 
 # --- Initial Database State ---
-# SQL commands to run at the start of each fuzzing session.
-# Use '$$schema$$' as a placeholder for the schema_name above.
 initial_db_setup_sqls:
   - "CREATE TABLE $$schema$$.products (id INT PRIMARY KEY, name TEXT, category TEXT, price NUMERIC, stock_count INT);"
   - "INSERT INTO $$schema$$.products SELECT g, 'Product-' || g, 'Category-' || (g%10), g*1.5, g*10 FROM generate_series(1,100) g;"
@@ -32,8 +30,6 @@ initial_db_setup_sqls:
 
 # --- Fuzzer Engine Strategy ---
 engine_strategy:
-  # Probability (0.0 to 1.0) of using the mutational engine.
-  # The rest will use the generative engine.
   mutation_probability: 0.7
 
 # --- Corpus for Mutational Engine ---
@@ -43,24 +39,39 @@ corpus:
 # --- Grammar File for Generative Engine ---
 grammar_file: "core/grammar.yaml"
 
-# --- Grammar and Generator Control (for Generative Engine) ---
+# --- NEW: Stateful Session Strategy ---
+# Defines the "shape" of each test case. The engine will generate and execute
+# statements in this order before validating the final SELECT.
+session_strategy:
+  # Generate between 1 and 2 DDL statements (CREATE TABLE, VIEW, INDEX)
+  ddl_statements: [1, 2]
+  # Generate between 3 and 8 DML statements (INSERT, UPDATE, DELETE)
+  dml_statements: [3, 8]
+  # Always finish with 1 SELECT statement, which is passed to the oracles
+  final_select_statements: 1
+
+# --- Grammar and Generator Control ---
 max_recursion_depth:
   expression: 5
 
-# Weights for choosing which statement to generate.
+# Weights for choosing which statement to generate within a phase
 statement_weights:
-  select_stmt: 70
-  create_table_stmt: 10
-  insert_stmt: 20
+  ddl_statement:
+    create_table_stmt: 50
+    create_view_stmt: 30
+    create_index_stmt: 20
+  dml_statement:
+    insert_stmt: 50
+    update_stmt: 40
+    delete_stmt: 10
+  select_stmt: 100 # Only one option for the final select
 
-# When a rule is a "choice" (A | B | C), these weights guide the selection.
 rule_choice_weights:
   select_list_item:
     column_name: 0.5
     aggregate_function: 0.4
     scalar_function: 0.1
 
-# Probabilities (0.0 to 1.0) for expanding optional or repeatable grammar rules.
 rule_expansion_probabilities:
   select_stmt:
     WHERE: 0.9
@@ -78,12 +89,10 @@ oracles:
     norec_settings:
       - "enable_nestloop"
       - "enable_hashjoin"
-      - "enable_mergejoin"
   
   QPGOracle:
     enabled: true
     enable_cert: true
     enable_dqp: true
     enable_coddtest: true
-    cert_threshold: 100 # Report bug if estimate is off by 100x
-
+    cert_threshold: 100
