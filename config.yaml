@@ -9,6 +9,7 @@ random_seed: null              # Set to an integer for reproducible runs, or nul
 log_level: INFO                # DEBUG, INFO, WARNING, ERROR
 log_file: "ybfuzz_run.log"       # Main log file
 bug_report_file: "bugs.log"    # File for detailed bug reports
+sql_log_file: "executed_queries.sql"
 catalog_refresh_interval: 20   # How often (in queries) to refresh the DB schema
 
 # --- Database Connection ---

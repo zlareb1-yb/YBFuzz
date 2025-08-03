@@ -92,6 +92,7 @@ class FuzzerConfig:
         # Set default file paths
         self._config.setdefault('log_file', 'ybfuzz.log')
         self._config.setdefault('bug_report_file', 'bugs.log')
+        self._config.setdefault('sql_log_file', 'executed_queries.sql') # Added default for robustness
         
         # Ensure database config structure exists
         self._config.setdefault('database', {})

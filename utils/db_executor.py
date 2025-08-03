@@ -1,7 +1,6 @@
 # This module encapsulates all direct interaction with the database.
-# This optimized version includes robust connection handling, explicit
-# transaction management, and automatic discovery of the database's
-# vocabulary (functions, types) for a truly intelligent fuzzer.
+# This optimized version includes a dedicated logger that creates a clean
+# SQL script for easy bug reproduction.
 
 import psycopg2
 import logging
@@ -118,22 +117,41 @@ class Catalog:
 
 class DBExecutor:
     """Handles resilient connection and execution of SQL queries."""
-    def __init__(self, db_config: dict, bug_reporter: BugReporter):
+    def __init__(self, db_config: dict, bug_reporter: BugReporter, config: FuzzerConfig):
         self.db_config = db_config
         self.bug_reporter = bug_reporter
+        self.config = config
         self.logger = logging.getLogger(self.__class__.__name__)
         self.conn = None
         self._connect()
         
         self.catalog = Catalog(self.get_connection, self.db_config['schema_name'])
         self.query_history = []
+        
+        # --- New: Dedicated SQL Logger ---
+        self._setup_sql_logger()
+
+    def _setup_sql_logger(self):
+        """Sets up a dedicated logger for just the SQL statements."""
+        self.sql_logger = logging.getLogger('SQLScript')
+        self.sql_logger.setLevel(logging.INFO)
+        self.sql_logger.propagate = False
+        
+        sql_log_file = self.config.get('sql_log_file', 'executed_queries.sql')
+        
+        if not self.sql_logger.handlers:
+            handler = logging.FileHandler(sql_log_file, mode='w')
+            # Use a formatter that only outputs the message, making it a clean script
+            formatter = logging.Formatter('%(message)s')
+            handler.setFormatter(formatter)
+            self.sql_logger.addHandler(handler)
+            self.logger.info(f"Clean SQL reproduction script will be saved to '{sql_log_file}'")
 
     def _connect(self):
         """Establishes a connection to the database."""
         try:
             self.logger.info(f"Connecting to database '{self.db_config['dbname']}' on {self.db_config['host']}...")
             self.conn = psycopg2.connect(**self.db_config)
-            self.logger.info("Database connection successful.")
         except psycopg2.OperationalError as e:
             self.logger.critical(f"Database connection failed: {e}")
             raise
@@ -149,6 +167,10 @@ class DBExecutor:
         """Executes a single SQL query in its own transaction."""
         self.query_history.append(sql)
         self.logger.debug(f"Executing: {sql[:400]}")
+        
+        # Log to the clean SQL script file
+        self.sql_logger.info(f"{sql.strip()}\n")
+
         conn = self.get_connection()
         try:
             with conn.cursor() as cur:

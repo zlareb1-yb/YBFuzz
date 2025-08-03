@@ -19,7 +19,7 @@ def main():
     )
 
     # --- Argument Groups for Clarity ---
-    
+
     run_group = parser.add_argument_group('Run Control')
     run_group.add_argument("-c", "--config", required=True, help="Path to the main YAML configuration file.")
     run_group.add_argument("-d", "--duration", type=int, help="Fuzzing duration in seconds. Overrides config file.")
