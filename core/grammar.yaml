@@ -7,7 +7,28 @@
 # --- Top Level Statements ---
 statement:
   type: choice
-  options: [select_stmt]
+  options: [select_stmt, create_table_stmt]
+
+# --- CREATE TABLE Statement ---
+create_table_stmt:
+  type: sequence
+  elements:
+    - { rule: "CREATE TABLE", type: keyword }
+    - { rule: table_name, type: non_terminal }
+    - { rule: "(", type: keyword }
+    - { rule: column_definitions, type: non_terminal }
+    - { rule: ")", type: keyword }
+
+column_definitions:
+  type: sequence
+  elements:
+    - { rule: column_definition, type: non_terminal, repeatable: true, separator: ", " }
+
+column_definition:
+  type: sequence
+  elements:
+    - { rule: column_name, type: non_terminal }
+    - { rule: data_type, type: non_terminal }
 
 # --- SELECT Statement Breakdown ---
 select_stmt:
@@ -118,6 +139,7 @@ comparison_op:
 # These are special rules that the generator resolves dynamically.
 table_name: { type: terminal }
 column_name: { type: terminal }
+data_type: { type: terminal }
 literal: { type: terminal }
 integer_literal: { type: terminal }
 scalar_function: { type: terminal }

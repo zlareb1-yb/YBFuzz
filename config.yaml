@@ -8,12 +8,11 @@ max_queries: 1000              # Maximum number of queries to generate
 random_seed: null              # Set to an integer for reproducible runs, or null for random
 log_level: INFO                # DEBUG, INFO, WARNING, ERROR
 log_file: "ybfuzz_run.log"       # Main log file
-bug_report_file: "bugs.log"    # File for detailed bug reports
-sql_log_file: "executed_queries.sql"
+bug_report_file: "bugs.log"    # File for detailed, structured bug reports
+sql_log_file: "executed_queries.sql" # A clean script for easy reproduction
 catalog_refresh_interval: 20   # How often (in queries) to refresh the DB schema
 
 # --- Database Connection ---
-# The primary database to be fuzzed (YugabyteDB)
 database:
   host: "127.0.0.1"
   port: 5433
@@ -23,11 +22,13 @@ database:
   schema_name: "ybfuzz_schema"
 
 # --- Initial Database State ---
-# SQL commands to run at the start of each fuzzing session to create a known state.
+# SQL commands to run at the start of each fuzzing session.
 # Use '$$schema$$' as a placeholder for the schema_name above.
 initial_db_setup_sqls:
   - "CREATE TABLE $$schema$$.products (id INT PRIMARY KEY, name TEXT, category TEXT, price NUMERIC, stock_count INT);"
   - "INSERT INTO $$schema$$.products SELECT g, 'Product-' || g, 'Category-' || (g%10), g*1.5, g*10 FROM generate_series(1,100) g;"
+  - "CREATE TABLE $$schema$$.orders (order_id INT PRIMARY KEY, product_id INT, quantity INT, order_date DATE);"
+  - "INSERT INTO $$schema$$.orders SELECT g, 1 + (g%100), 1 + (g%5), '2025-01-01'::date + (g || ' days')::interval FROM generate_series(1, 200) g;"
 
 # --- Fuzzer Engine Strategy ---
 engine_strategy:
@@ -39,16 +40,30 @@ engine_strategy:
 corpus:
   seed_file: "corpus/seed_queries.txt"
 
+# --- Grammar File for Generative Engine ---
+grammar_file: "core/grammar.yaml"
+
 # --- Grammar and Generator Control (for Generative Engine) ---
-grammar_file: "core/grammar.py"
 max_recursion_depth:
   expression: 5
+
 statement_weights:
-  select_stmt: 100
+  select_stmt: 90
+  create_table_stmt: 10
+
 rule_choice_weights:
   select_list_item:
     column_name: 0.5
-    aggregate_function: 0.5
+    aggregate_function: 0.4
+    scalar_function: 0.1
+
+rule_expansion_probabilities:
+  select_stmt:
+    WHERE: 0.9
+    GROUP_BY: 0.7
+    LIMIT: 0.4
+  boolean_term:
+    AND: 0.5
 
 # --- Oracle Configuration ---
 oracles:
@@ -59,10 +74,11 @@ oracles:
     norec_settings:
       - "enable_nestloop"
       - "enable_hashjoin"
+      - "enable_mergejoin"
   
   QPGOracle:
     enabled: true
     enable_cert: true
     enable_dqp: true
-    cert_threshold: 100
-
+    enable_coddtest: true
+    cert_threshold: 100 # Report bug if estimate is off by 100x
