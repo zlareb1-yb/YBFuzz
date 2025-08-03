@@ -69,6 +69,12 @@ class CreateTableNode(SQLNode):
     def to_sql(self) -> str:
         return f"CREATE TABLE {self.table_name.to_sql()} ({self.columns.to_sql()});"
 
+class InsertNode(SQLNode):
+    def __init__(self, table: RawSQL, columns: 'SequenceNode', values: 'SequenceNode'):
+        super().__init__(); self.table = table; self.columns = columns; self.values = values
+    def to_sql(self) -> str:
+        return f"INSERT INTO {self.table.to_sql()} ({self.columns.to_sql()}) VALUES ({self.values.to_sql()});"
+
 class ColumnDefNode(SQLNode):
     def __init__(self, col_name: RawSQL, col_type: RawSQL):
         super().__init__(); self.col_name = col_name; self.col_type = col_type
@@ -87,6 +93,7 @@ class GenerationContext:
     catalog: Catalog; config: FuzzerConfig; recursion_depth: dict[str, int] = field(default_factory=dict)
     current_table: Table | None = None; grouping_columns: list[Column] = field(default_factory=dict)
     expected_type: str | None = None
+    insert_columns: list[Column] = field(default_factory=list)
 
 class GrammarGenerator:
     def __init__(self, grammar: dict, config: FuzzerConfig, catalog: Catalog):
@@ -134,6 +141,7 @@ class GrammarGenerator:
         if not elements: return None
         if rule_name == 'select_stmt': return SelectNode(elements.get('select_list'), elements.get('from_clause'), elements.get('where_clause'), elements.get('group_by_clause'), elements.get('limit_clause'))
         if rule_name == 'create_table_stmt': return CreateTableNode(elements.get('table_name'), elements.get('column_definitions'))
+        if rule_name == 'insert_stmt': return InsertNode(elements.get('table_name'), elements.get('column_list'), elements.get('literal_list'))
         if rule_name == 'column_definition': return ColumnDefNode(elements.get('column_name'), elements.get('data_type'))
         if rule_name == 'comparison_predicate':
             col_node = elements.get('column_name')
@@ -144,8 +152,8 @@ class GrammarGenerator:
 
     def _generate_terminal(self, rule_name: str, context: GenerationContext) -> SQLNode | None:
         if rule_name == "table_name":
-            # For SELECT, pick an existing table. For CREATE, generate a new name.
-            if context.recursion_depth.get("create_table_stmt", 0) > 0:
+            is_create = context.recursion_depth.get("create_table_stmt", 0) > 0
+            if is_create:
                  table_name = f"fuzz_table_{int(time.time())}_{random.randint(1000,9999)}"
                  return RawSQL(f'"{table_name}"')
             else:
@@ -155,8 +163,16 @@ class GrammarGenerator:
                 return RawSQL(f'"{table.name}"')
         
         if rule_name == "column_name":
-            if context.recursion_depth.get("create_table_stmt", 0) > 0:
-                return RawSQL(f'"col_{random.randint(1,100)}"')
+            is_create = context.recursion_depth.get("create_table_stmt", 0) > 0
+            if is_create: return RawSQL(f'"col_{random.randint(1,100)}"')
+            
+            is_column_list = context.recursion_depth.get("column_list", 0) > 0
+            if is_column_list:
+                column = self.catalog.get_random_column(context.current_table)
+                if not column: return None
+                context.insert_columns.append(column)
+                return ColumnNode(column)
+            
             if not context.current_table: return None
             col_type = 'numeric' if context.recursion_depth.get("aggregate_function", 0) > 0 else None
             column = self.catalog.get_random_column(context.current_table, of_type=col_type)
@@ -164,8 +180,15 @@ class GrammarGenerator:
             if context.recursion_depth.get("group_by_list", 0) > 0: context.grouping_columns.append(column)
             return ColumnNode(column)
 
+        if rule_name == "literal":
+            is_literal_list = context.recursion_depth.get("literal_list", 0) > 0
+            if is_literal_list and context.insert_columns:
+                column_for_this_literal = context.insert_columns.pop(0)
+                return LiteralNode(self._generate_typed_literal(column_for_this_literal.data_type))
+            
+            return LiteralNode(self._generate_typed_literal(context.expected_type))
+
         if rule_name == "data_type": return RawSQL(random.choice(['INT PRIMARY KEY', 'TEXT', 'NUMERIC', 'BOOLEAN']))
-        if rule_name == "literal": return LiteralNode(self._generate_typed_literal(context.expected_type))
         if rule_name == "integer_literal": return LiteralNode(random.randint(1, 100))
         if rule_name == "scalar_function": return self._generate_function_call(context)
         

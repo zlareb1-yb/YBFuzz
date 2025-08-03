@@ -47,16 +47,20 @@ grammar_file: "core/grammar.yaml"
 max_recursion_depth:
   expression: 5
 
+# Weights for choosing which statement to generate.
 statement_weights:
-  select_stmt: 90
+  select_stmt: 70
   create_table_stmt: 10
+  insert_stmt: 20
 
+# When a rule is a "choice" (A | B | C), these weights guide the selection.
 rule_choice_weights:
   select_list_item:
     column_name: 0.5
     aggregate_function: 0.4
     scalar_function: 0.1
 
+# Probabilities (0.0 to 1.0) for expanding optional or repeatable grammar rules.
 rule_expansion_probabilities:
   select_stmt:
     WHERE: 0.9
@@ -82,3 +86,4 @@ oracles:
     enable_dqp: true
     enable_coddtest: true
     cert_threshold: 100 # Report bug if estimate is off by 100x
+

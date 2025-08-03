@@ -7,7 +7,7 @@
 # --- Top Level Statements ---
 statement:
   type: choice
-  options: [select_stmt, create_table_stmt]
+  options: [select_stmt, create_table_stmt, insert_stmt]
 
 # --- CREATE TABLE Statement ---
 create_table_stmt:
@@ -29,6 +29,30 @@ column_definition:
   elements:
     - { rule: column_name, type: non_terminal }
     - { rule: data_type, type: non_terminal }
+
+# --- INSERT Statement ---
+insert_stmt:
+  type: sequence
+  elements:
+    - { rule: "INSERT INTO", type: keyword }
+    - { rule: table_name, type: non_terminal }
+    - { rule: "(", type: keyword }
+    - { rule: column_list, type: non_terminal }
+    - { rule: ")", type: keyword }
+    - { rule: "VALUES", type: keyword }
+    - { rule: "(", type: keyword }
+    - { rule: literal_list, type: non_terminal }
+    - { rule: ")", type: keyword }
+
+column_list:
+  type: sequence
+  elements:
+    - { rule: column_name, type: non_terminal, repeatable: true, separator: ", " }
+
+literal_list:
+  type: sequence
+  elements:
+    - { rule: literal, type: non_terminal, repeatable: true, separator: ", " }
 
 # --- SELECT Statement Breakdown ---
 select_stmt:
