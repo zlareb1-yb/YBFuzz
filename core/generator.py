@@ -52,10 +52,24 @@ class BinaryOpNode(SQLNode):
         self.add_child(left); self.add_child(right)
     def to_sql(self) -> str: return f"({self.left.to_sql()} {self.op} {self.right.to_sql()})"
 
+class SequenceNode(SQLNode):
+    def __init__(self, elements: list, separator: str = " "):
+        super().__init__(); self.elements = elements; self.separator = separator
+        for el in elements: self.add_child(el)
+    def to_sql(self) -> str: return self.separator.join(e.to_sql() for e in self.elements if e)
+
+# --- Specific, Rich AST Nodes ---
+
+class WhereClauseNode(SequenceNode):
+    """A dedicated node representing a WHERE clause for easy oracle analysis."""
+    pass
+
 class SelectNode(SQLNode):
     def __init__(self, projections, from_clause, where_clause=None, group_by_clause=None, limit_clause=None):
         super().__init__(); self.projections = projections; self.from_clause = from_clause
         self.where_clause = where_clause; self.group_by_clause = group_by_clause; self.limit_clause = limit_clause
+        self.add_child(projections); self.add_child(from_clause); self.add_child(where_clause)
+        self.add_child(group_by_clause); self.add_child(limit_clause)
     def to_sql(self) -> str:
         parts = [f"SELECT {self.projections.to_sql()}", self.from_clause.to_sql()]
         if self.where_clause: parts.append(self.where_clause.to_sql())
@@ -80,11 +94,6 @@ class ColumnDefNode(SQLNode):
         super().__init__(); self.col_name = col_name; self.col_type = col_type
     def to_sql(self) -> str: return f"{self.col_name.to_sql()} {self.col_type.to_sql()}"
 
-class SequenceNode(SQLNode):
-    def __init__(self, elements: list, separator: str = " "):
-        super().__init__(); self.elements = elements; self.separator = separator
-        for el in elements: self.add_child(el)
-    def to_sql(self) -> str: return self.separator.join(e.to_sql() for e in self.elements if e)
 
 # --- Generation Context ---
 from dataclasses import dataclass, field
@@ -139,6 +148,7 @@ class GrammarGenerator:
         context.expected_type = None
         
         if not elements: return None
+        # --- Rich AST Node Instantiation ---
         if rule_name == 'select_stmt': return SelectNode(elements.get('select_list'), elements.get('from_clause'), elements.get('where_clause'), elements.get('group_by_clause'), elements.get('limit_clause'))
         if rule_name == 'create_table_stmt': return CreateTableNode(elements.get('table_name'), elements.get('column_definitions'))
         if rule_name == 'insert_stmt': return InsertNode(elements.get('table_name'), elements.get('column_list'), elements.get('literal_list'))
@@ -147,6 +157,8 @@ class GrammarGenerator:
             col_node = elements.get('column_name')
             if isinstance(col_node, ColumnNode): context.expected_type = col_node.column.data_type
             return BinaryOpNode(col_node, elements.get('comparison_op').to_sql(), self._generate_rule('literal', context))
+        if rule_name == 'where_clause':
+            return WhereClauseNode(list(elements.values()))
 
         return SequenceNode(list(elements.values()), separator=rule_def.get("separator", " "))
 
@@ -179,7 +191,7 @@ class GrammarGenerator:
             if not column: return None
             if context.recursion_depth.get("group_by_list", 0) > 0: context.grouping_columns.append(column)
             return ColumnNode(column)
-
+        
         if rule_name == "literal":
             is_literal_list = context.recursion_depth.get("literal_list", 0) > 0
             if is_literal_list and context.insert_columns:
