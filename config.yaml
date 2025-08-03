@@ -1,5 +1,5 @@
 # ==========================================================
-# YBFuzz Framework Configuration (Definitive Edition)
+# YBFuzz Framework Configuration
 # ==========================================================
 
 # --- Run Control ---
@@ -20,6 +20,16 @@ database:
   password: "yugabyte"
   dbname: "yugabyte"
   schema_name: "ybfuzz_schema"
+
+# --- Sanitizer Configuration ---
+# Configure this section when running against a sanitizer-enabled build of YugabyteDB.
+sanitizer:
+  # The type of sanitizer being used. E.g., "ASan", "TSan", "UBSan".
+  # This will be included in bug reports for better classification.
+  type: "ASan"
+  # The absolute path to the database log file where sanitizer output can be found.
+  # The bug reporter will scan this file when a crash is detected.
+  log_file_path: "/path/to/yugabytedb/logs/tserver.INFO" # IMPORTANT: Update this path
 
 # --- Initial Database State ---
 # SQL commands to run at the start of each fuzzing session.

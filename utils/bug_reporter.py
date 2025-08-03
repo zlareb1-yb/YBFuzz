@@ -1,12 +1,11 @@
 # A centralized module for formatting and logging detected bugs.
-# This optimized version provides structured JSON output, automatic
-# bug deduplication, and captures rich historical context to make
-# bug reproduction and analysis trivial. It also integrates with the
-# DeltaReducer to automatically minimize failing test cases.
+# This definitive version provides structured JSON output, automatic
+# bug deduplication, test case reduction, and sanitizer awareness.
 
 import logging
 import json
 import os
+import re
 import hashlib
 from config import FuzzerConfig
 # We use a forward declaration for type hinting to avoid circular imports
@@ -40,6 +39,13 @@ class BugReporter:
         self.reducer: 'DeltaReducer' | None = None
         self.reducer_enabled = self.config.get('reducer', {}).get('enabled', False)
 
+        # --- Sanitizer Configuration ---
+        self.sanitizer_config = self.config.get('sanitizer', {})
+        self.sanitizer_type = self.sanitizer_config.get('type')
+        self.sanitizer_log_path = self.sanitizer_config.get('log_file_path')
+        self.logger = logging.getLogger(self.__class__.__name__)
+
+
     def set_db_executor(self, executor: 'DBExecutor'):
         """
         Sets the DBExecutor instance and initializes the reducer which depends on it.
@@ -68,12 +74,33 @@ class BugReporter:
     def _get_bug_signature(self, bug_type: str, exception: Exception | None) -> str:
         """
         Creates a unique signature for a bug to enable deduplication.
-        A simple signature is based on the bug type and the exception message,
-        ignoring specific object IDs or memory addresses.
         """
         # Take only the first line of the exception to avoid noise from stack traces
         error_message = str(exception).splitlines()[0] if exception else "N/A"
         return f"{bug_type}|{error_message}"
+
+    def _scan_log_for_sanitizer_error(self) -> str | None:
+        """Scans the DB log file for sanitizer error messages."""
+        if not self.sanitizer_type or not self.sanitizer_log_path:
+            return None
+        
+        try:
+            with open(self.sanitizer_log_path, 'r') as f:
+                content = f.read()
+            
+            # Look for common sanitizer error patterns
+            asan_match = re.search(r'==\d+==ERROR: AddressSanitizer: ([\w-]+)', content)
+            if asan_match:
+                return f"{self.sanitizer_type} - {asan_match.group(1)}"
+            
+            # Add patterns for TSan, UBSan, etc. here
+            
+        except FileNotFoundError:
+            self.logger.warning(f"Sanitizer log file not found at '{self.sanitizer_log_path}'.")
+        except Exception as e:
+            self.logger.error(f"Error reading sanitizer log file: {e}")
+            
+        return None
 
     def _save_to_evolved_corpus(self, sql_query: str, reason: str):
         """Saves an interesting query to the evolved corpus directory."""
@@ -81,7 +108,6 @@ class BugReporter:
             return
         
         try:
-            # Use a hash of the query as the filename to avoid duplicates
             query_hash = hashlib.sha256(sql_query.encode()).hexdigest()
             filepath = os.path.join(self.evo_dir, f"{query_hash}.sql")
             
@@ -89,69 +115,62 @@ class BugReporter:
                 with open(filepath, 'w') as f:
                     f.write(f"-- Reason: {reason}\n")
                     f.write(sql_query)
-                logging.getLogger(self.__class__.__name__).info(f"Saved interesting query to corpus: {reason}")
+                self.logger.info(f"Saved interesting query to corpus: {reason}")
         except Exception as e:
-            logging.getLogger(self.__class__.__name__).error(f"Failed to save query to evolved corpus: {e}")
+            self.logger.error(f"Failed to save query to evolved corpus: {e}")
 
     def report_bug(self, oracle_name: str, bug_type: str, description: str, **kwargs):
         """
-        Formats and logs a detailed bug report. If enabled, it will first
-        attempt to minimize the failing query.
+        Formats and logs a detailed bug report. If a crash occurs, it will
+        check for sanitizer output to enrich the report.
         """
         exception = kwargs.get('exception')
+        
+        # Check for Sanitizer Errors on Critical Failures
+        is_crash = "Critical Database Error" in bug_type
+        if is_crash:
+            sanitizer_bug_type = self._scan_log_for_sanitizer_error()
+            if sanitizer_bug_type:
+                bug_type = sanitizer_bug_type
+                description = f"A critical crash was detected and sanitizer output was found. {description}"
+
         signature = self._get_bug_signature(bug_type, exception)
 
         if signature in self._reported_bugs:
-            logging.getLogger(self.__class__.__name__).debug(f"Duplicate bug found and ignored: {signature}")
-            return # This is a duplicate, so we don't log it again.
+            self.logger.debug(f"Duplicate bug found and ignored: {signature}")
+            return
 
-        # This is a new bug, so we add it to our set and log it.
         self._reported_bugs.add(signature)
         
         triggering_query = kwargs.get('original_query') or kwargs.get('query')
         
-        # --- Run the reducer before reporting ---
+        # Run the reducer before reporting
         minimized_query = None
         if self.reducer and triggering_query and exception:
             minimized_query = self.reducer.reduce(triggering_query, signature)
             kwargs['minimized_query'] = minimized_query
-            # Save the minimized query to the corpus for future mutations
             self._save_to_evolved_corpus(minimized_query, f"Triggered and minimized bug: {bug_type}")
         elif triggering_query:
-            # If reducer is not active, still save the original bug-triggering query
             self._save_to_evolved_corpus(triggering_query, f"Triggered bug: {bug_type}")
         
-        # --- Build Rich Context for the Report ---
+        # Build Rich Context for the Report
+        kwargs['exception'] = str(exception) if exception else None
+        query_history = self.db_executor.query_history[-11:-1] if self.db_executor else []
         
-        # Safely convert exception and other non-serializable objects to strings
-        for key, value in kwargs.items():
-            if isinstance(value, Exception):
-                kwargs[key] = str(value)
-        
-        # Get recent query history for context
-        query_history = []
-        if self.db_executor and hasattr(self.db_executor, 'query_history'):
-            # Safely slice the last 10 queries, excluding the current one
-            history_slice = self.db_executor.query_history[-11:-1] if len(self.db_executor.query_history) > 1 else []
-            query_history = history_slice
-
         bug_report = {
             "oracle": oracle_name,
             "bug_type": bug_type,
             "seed": self.seed,
             "description": description,
             "context": kwargs,
-            "query_history": query_history
+            "query_history": query_history,
+            "sanitizer_used": self.sanitizer_type
         }
 
-        # Log the structured report as a single line of JSON
         try:
-            json_report = json.dumps(bug_report, indent=None) # indent=None for single line
-            self.bug_logger.error(json_report)
+            self.bug_logger.error(json.dumps(bug_report))
         except TypeError as e:
-            # Fallback for unserializable objects
-            logging.getLogger(self.__class__.__name__).error(f"Failed to serialize bug report to JSON: {e}. Logging as string.")
+            self.logger.error(f"Failed to serialize bug report to JSON: {e}")
             self.bug_logger.error(str(bug_report))
 
-        # Also log a notification to the main console/log
         logging.error(f"!!! NEW BUG FOUND by {oracle_name}! Type: {bug_type}. See {self.bug_log_file} for details. !!!")
