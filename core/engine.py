@@ -35,8 +35,8 @@ class FuzzerEngine:
         self.oracles: list[BaseOracle] = self._load_oracles()
         self.logger.info(f"Registered {len(self.oracles)} active oracles: {[o.__class__.__name__ for o in self.oracles]}")
 
-        # Setup for Corpus Evolution
-        self._setup_corpus_evolution()
+        # Setup for Corpus Evolution and SQLLogicTest
+        self._setup_output_dirs()
 
     def _load_oracles(self) -> list[BaseOracle]:
         """Instantiates and registers all bug-finding oracles based on config."""
@@ -48,14 +48,19 @@ class FuzzerEngine:
                 oracles.append(oracle_class(self.db_executor, self.bug_reporter, self.config))
         return oracles
 
-    def _setup_corpus_evolution(self):
-        """Creates the directory for the evolved corpus if enabled."""
+    def _setup_output_dirs(self):
+        """Creates directories for corpus evolution and SQLLogicTest files."""
         evo_config = self.config.get('corpus_evolution', {})
         if evo_config.get('enabled', False):
             directory = evo_config.get('directory')
             if directory:
                 os.makedirs(directory, exist_ok=True)
-                self.logger.info(f"Corpus Evolution enabled. Interesting queries will be saved to '{directory}'.")
+        
+        sqllogic_config = self.config.get('sqllogictest_formatter', {})
+        if sqllogic_config.get('enabled', False):
+            directory = sqllogic_config.get('output_directory')
+            if directory:
+                os.makedirs(directory, exist_ok=True)
 
     def run(self):
         """The main fuzzing loop, now structured around sessions."""

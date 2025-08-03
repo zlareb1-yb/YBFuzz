@@ -57,6 +57,12 @@ corpus_evolution:
 reducer:
   enabled: true
 
+# --- SQLLogicTest Formatter Configuration ---
+# Automatically generates a .test file for each unique bug found.
+sqllogictest_formatter:
+  enabled: true
+  output_directory: "sqllogic_tests"
+
 # --- Grammar File for Generative Engine ---
 grammar_file: "core/grammar.yaml"
 

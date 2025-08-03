@@ -1,6 +1,7 @@
 # A centralized module for formatting and logging detected bugs.
 # This definitive version provides structured JSON output, automatic
-# bug deduplication, test case reduction, and sanitizer awareness.
+# bug deduplication, test case reduction, sanitizer awareness, and
+# generates SQLLogicTest regression tests for every bug.
 
 import logging
 import json
@@ -13,6 +14,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .db_executor import DBExecutor
     from reducer.delta_reducer import DeltaReducer
+from .sqllogictest_formatter import SQLLogicTestFormatter
 
 
 class BugReporter:
@@ -44,6 +46,12 @@ class BugReporter:
         self.sanitizer_type = self.sanitizer_config.get('type')
         self.sanitizer_log_path = self.sanitizer_config.get('log_file_path')
         self.logger = logging.getLogger(self.__class__.__name__)
+
+        # --- SQLLogicTest Formatter ---
+        self.sqllogic_config = self.config.get('sqllogictest_formatter', {})
+        self.sqllogic_formatter = None
+        if self.sqllogic_config.get('enabled', False):
+            self.sqllogic_formatter = SQLLogicTestFormatter(self.config)
 
 
     def set_db_executor(self, executor: 'DBExecutor'):
@@ -119,6 +127,28 @@ class BugReporter:
         except Exception as e:
             self.logger.error(f"Failed to save query to evolved corpus: {e}")
 
+    def _save_sqllogic_test(self, test_content: str, signature: str):
+        """Saves a generated SQLLogicTest file."""
+        if not self.sqllogic_formatter:
+            return
+            
+        output_dir = self.sqllogic_config.get('output_directory')
+        if not output_dir:
+            self.logger.warning("SQLLogicTest formatter is enabled, but no output_directory is configured.")
+            return
+
+        try:
+            # Use a hash of the signature for a stable filename
+            signature_hash = hashlib.sha256(signature.encode()).hexdigest()[:16]
+            filename = f"bug_{signature_hash}.test"
+            filepath = os.path.join(output_dir, filename)
+            
+            with open(filepath, 'w') as f:
+                f.write(test_content)
+            self.logger.info(f"Generated SQLLogicTest regression test: {filepath}")
+        except Exception as e:
+            self.logger.error(f"Failed to save SQLLogicTest file: {e}")
+
     def report_bug(self, oracle_name: str, bug_type: str, description: str, **kwargs):
         """
         Formats and logs a detailed bug report. If a crash occurs, it will
@@ -152,6 +182,12 @@ class BugReporter:
             self._save_to_evolved_corpus(minimized_query, f"Triggered and minimized bug: {bug_type}")
         elif triggering_query:
             self._save_to_evolved_corpus(triggering_query, f"Triggered bug: {bug_type}")
+        
+        # Generate SQLLogicTest file
+        query_for_test = minimized_query or triggering_query
+        if self.sqllogic_formatter and query_for_test and exception:
+            test_content = self.sqllogic_formatter.format_error_test(query_for_test, exception)
+            self._save_sqllogic_test(test_content, signature)
         
         # Build Rich Context for the Report
         kwargs['exception'] = str(exception) if exception else None
