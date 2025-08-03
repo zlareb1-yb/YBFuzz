@@ -9,20 +9,24 @@ It combines a grammar-driven engine that generates novel queries from scratch wi
 ---
 ## Key Features
 
-* **Hybrid Fuzzing Engine:** Intelligently switches between a **Generative Engine** (for exploring fundamental SQL structures) and a **Mutational Engine** (for testing complex, real-world syntax learned from a corpus).
+### Fuzzing Engine & Strategy
+* **Hybrid Engine:** Intelligently switches between a **Generative Engine** (for exploring fundamental SQL structures) and a **Mutational Engine** (for testing complex, real-world syntax learned from a corpus).
+* **Stateful Fuzzing Sessions:** Moves beyond single queries to test complex interactions, generating sequences of DDL and DML to create a rich database state before running a final validation query.
+* **Autonomous Vocabulary Discovery:** Automatically learns the full set of functions and data types from the target database's `pg_catalog`, ensuring it always tests the latest features.
+* **Corpus Evolution:** Learns over time by automatically saving interesting queries (those that trigger bugs or new query plans) to a dynamic corpus, making future fuzzing runs smarter.
 
-* **Pluggable Bug-Finding Oracles:** A suite of advanced, configurable oracles to detect a wide range of bugs:
-    * **TLP (Ternary Logic Partitioning):** Finds correctness bugs in `WHERE` clause logic.
-    * **NoREC (Non-optimizing Reference Engine):** Finds logic bugs by disabling optimizer features and comparing results.
-    * **DQP (Differential Query Plans):** Finds optimizer bugs and performance regressions by comparing query plans before and after schema changes (e.g., adding an index).
-    * **CERT (Cardinality Estimation Testing):** Finds planner bugs by validating row count estimates against actual results, which is a primary cause of poor query performance.
-    * **CODDTest (Constant Optimization Driven Testing):** Finds optimizer stability bugs by comparing query plans after minor changes to literal values.
+### Advanced Bug-Finding Oracles
+* **TLP (Ternary Logic Partitioning):** Finds correctness bugs in `WHERE` clause logic by validating `TRUE`, `FALSE`, and `NULL` partitions.
+* **NoREC (Non-optimizing Reference Engine):** Finds logic bugs by disabling optimizer features (e.g., hash joins) and comparing results against the optimized query.
+* **DQP (Differential Query Plans):** Finds optimizer bugs and performance regressions by comparing query plans before and after schema changes (e.g., adding an index).
+* **CERT (Cardinality Estimation Testing):** Finds planner bugs by validating row count estimates against actual results, a primary cause of poor query performance.
+* **CODDTest (Constant Optimization Driven Testing):** Finds optimizer stability bugs by comparing query plans after minor changes to literal values.
 
-* **Performance Bug Detection:** The framework is explicitly designed to find performance issues by analyzing query plans, validating optimizer choices, and checking for cardinality misestimations.
-
-* **Autonomous & Scalable:** Designed to learn new SQL functions and types automatically from `pg_catalog` and new syntax from a simple corpus file, making it easy to scale testing as YugabyteDB evolves.
-
-* **Reproducible & Configurable:** Every bug report is a structured JSON object that includes the random seed for perfect reproducibility. A powerful CLI and YAML configuration provide full control over every aspect of a fuzzing run.
+### Developer Workflow & Reproducibility
+* **Automatic Test Case Reduction:** When a bug is found, a **delta debugging** algorithm automatically shrinks the failing query to the smallest possible version that still reproduces the bug, saving hours of developer time.
+* **SQLLogicTest Formatter:** For every unique bug found, the framework automatically generates a ready-to-commit regression test in the standard `SQLLogicTest` format.
+* **Sanitizer Integration:** Designed to run against sanitizer-enabled builds (ASan, TSan) to find the most critical memory corruption and data race bugs.
+* **Structured, Reproducible Bug Reports:** Every bug report is a machine-readable JSON object that includes the random seed, query history, and minimized test case for perfect reproducibility.
 
 ---
 ## Architecture Overview
@@ -41,8 +45,8 @@ ybfuzz_framework/
 │
 ├── core/                     # The heart of the fuzzer
 │   ├── engine.py             # The main FuzzerEngine orchestrator
-│   ├── grammar.py            # Loads and validates the grammar from YAML
 │   ├── grammar.yaml          # Grammar "textbook" for the Generator
+│   ├── grammar.py            # Loads and validates the grammar from YAML
 │   ├── generator.py          # The Generative Engine
 │   └── mutator.py            # The Mutational Engine
 │
@@ -51,36 +55,14 @@ ybfuzz_framework/
 │   ├── tlp_oracle.py         # Implements TLP and NoREC
 │   └── qpg_oracle.py         # Implements DQP, CERT, and CODDTest
 │
+├── reducer/
+│   └── delta_reducer.py      # Implements the test case reduction logic
+│
 └── utils/                    # Helper modules
     ├── db_executor.py        # Handles all database connections and schema discovery
-    └── bug_reporter.py       # Manages structured, deduplicated bug reporting
+    ├── bug_reporter.py       # Manages structured, deduplicated bug reporting
+    └── sqllogictest_formatter.py # Creates regression tests
 ```
-
-### Detailed File Explanations
-
-#### Root Directory
-* `main.py`: The single entry point for the entire framework. It handles command-line argument parsing, providing a clean and standard user interface. This centralizes control and makes the framework easy to integrate into automated CI/CD pipelines.
-* `config.py`: A robust configuration loader. Its job is to read the `config.yaml` file, validate the settings, and intelligently merge them with any command-line arguments.
-* `config.yaml`: The "control panel" for the fuzzer. This file allows any user to change the fuzzer's entire behavior—from database credentials to the probabilities of generating certain SQL clauses—by editing a simple, human-readable file.
-
-#### `corpus/` Directory
-* `seed_queries.txt`: The heart of the **mutational engine** and a key to the framework's autonomy. This file allows us to teach the fuzzer new and complex SQL syntax simply by adding an example. The fuzzer then learns from this corpus, generating thousands of variations. This is how we scale to new YugabyteDB features with minimal effort.
-
-#### `core/` Package
-* `engine.py`: The central orchestrator. Its job is to make high-level decisions, such as choosing between the generative and mutational engines, and passing the results to the oracles. It remains small and stable, delegating the complex work to other components.
-* `grammar.yaml`: The "grammar textbook" for the generative engine. It defines the structure of the SQL language in a human-readable format, completely decoupled from the fuzzer's code.
-* `grammar.py`: The loader and validator for `grammar.yaml`. It ensures the grammar is well-formed before the fuzzer starts.
-* `generator.py`: The **generative engine**. It uses the grammar to build novel, semantically correct queries from scratch, ensuring we can explore fundamental SQL structures that might not be present in our corpus. It builds a rich Abstract Syntax Tree (AST) for deep analysis.
-* `mutator.py`: The **mutational engine**. It intelligently modifies queries from the corpus, allowing the fuzzer to test complex syntax it has learned by observation.
-
-#### `oracles/` Package
-* `base_oracle.py`: Defines the `BaseOracle` abstract class. This is a critical use of the **Strategy design pattern**. It allows the engine to treat all bug-finding techniques uniformly, making the system highly extensible.
-* `tlp_oracle.py`: A concrete implementation of the oracle strategy. This module contains the logic for advanced correctness testing like **Ternary Logic Partitioning (TLP)** and **Non-optimizing Reference Engine Construction (NoREC)**.
-* `qpg_oracle.py`: Another oracle implementation, this one focused on the optimizer. It contains the logic for **Differential Query Plans (DQP)**, **Cardinality Estimation Restriction Testing (CERT)**, and **Constant Optimization Driven Testing (CODDTest)**.
-
-#### `utils/` Package
-* `db_executor.py`: Encapsulates all database interaction. This is crucial for maintainability. It also contains the `Catalog` class, which performs **automatic vocabulary discovery** by querying `pg_catalog`, making the entire framework state-aware.
-* `bug_reporter.py`: Centralizes all bug reporting. It performs **automatic bug deduplication** and formats reports as structured JSON for easy analysis. This decouples the format of a bug report from the logic that finds it.
 
 ---
 ## Getting Started
@@ -134,7 +116,7 @@ For full control, you can override any setting from the `config.yaml` file using
 | ---------------- | --------- | ------------------------------------------------------------------------ |
 | `--config`       | `-c`      | **(Required)** Path to the YAML configuration file.                      |
 | `--duration`     | `-d`      | Fuzzing duration in seconds.                                             |
-| `--max-queries`  | `-q`      | Maximum number of queries to generate.                                   |
+| `--max-sessions` | `-q`      | Maximum number of sessions to generate.                                  |
 | `--seed`         | `-s`      | Integer seed for a reproducible run.                                     |
 | `--log-level`    | `-l`      | Set the logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`).             |
 | `--db-host`      |           | Override the database host.                                              |
@@ -153,7 +135,7 @@ python main.py --config config.yaml --duration 300
 **Reproduce a bug found in a previous run using its seed:**
 
 ```bash
-python main.py --config config.yaml --seed 1660047891 --max-queries 1
+python main.py --config config.yaml --seed 1660047891 --max-sessions 1
 ```
 
 **Run a long session focused only on finding logic bugs (disabling the optimizer oracle):**
@@ -161,6 +143,34 @@ python main.py --config config.yaml --seed 1660047891 --max-queries 1
 ```bash
 python main.py --config config.yaml --duration 3600 --disable-oracle QPGOracle
 ```
+
+---
+## Advanced Usage: Sanitizer Integration
+
+To find the most critical memory corruption and data race bugs, it is highly recommended to run `YBFuzz` against a version of YugabyteDB that has been compiled with a sanitizer like AddressSanitizer (ASan).
+
+### Workflow
+
+1.  **Compile YugabyteDB with a Sanitizer:**
+    Follow the official YugabyteDB documentation to build the database from source with the desired sanitizer enabled (e.g., using the `--asan` flag in `yb_build.sh`).
+
+2.  **Start the Sanitized YugabyteDB Cluster:**
+    Run your custom-built, sanitized version of YugabyteDB.
+
+3.  **Configure `config.yaml` for Sanitizer Testing:**
+    Update your `config.yaml` to tell the fuzzer it's running in sanitizer mode. This is critical for generating high-quality bug reports.
+
+    ```yaml
+    # In config.yaml
+    sanitizer:
+      type: "ASan"
+      log_file_path: "/path/to/your/yugabyte_data/node-1/disk-1/yb-data/tserver/logs/yugabytedb-tserver.INFO"
+    ```
+    * **`type`**: The name of the sanitizer you used (e.g., "ASan", "TSan").
+    * **`log_file_path`**: The **absolute path** to the YugabyteDB `tserver` log file. The bug reporter will scan this file for sanitizer output when a crash occurs.
+
+4.  **Run the Fuzzer:**
+    Execute `YBFuzz` as you normally would. When a query causes a crash, the `BugReporter` will automatically check the database log. If it finds sanitizer output, it will create a high-priority bug report with a specific type like `ASan - Heap-Use-After-Free`, providing invaluable information for developers.
 
 ---
 ## Contributing
