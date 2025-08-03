@@ -58,11 +58,7 @@ class SequenceNode(SQLNode):
         for el in elements: self.add_child(el)
     def to_sql(self) -> str: return self.separator.join(e.to_sql() for e in self.elements if e)
 
-# --- Specific, Rich AST Nodes ---
-
-class WhereClauseNode(SequenceNode):
-    """A dedicated node representing a WHERE clause for easy oracle analysis."""
-    pass
+class WhereClauseNode(SequenceNode): pass
 
 class SelectNode(SQLNode):
     def __init__(self, projections, from_clause, where_clause=None, group_by_clause=None, limit_clause=None):
@@ -94,13 +90,13 @@ class ColumnDefNode(SQLNode):
         super().__init__(); self.col_name = col_name; self.col_type = col_type
     def to_sql(self) -> str: return f"{self.col_name.to_sql()} {self.col_type.to_sql()}"
 
-
 # --- Generation Context ---
 from dataclasses import dataclass, field
 @dataclass
 class GenerationContext:
     catalog: Catalog; config: FuzzerConfig; recursion_depth: dict[str, int] = field(default_factory=dict)
-    current_table: Table | None = None; grouping_columns: list[Column] = field(default_factory=dict)
+    current_table: Table | None = None
+    grouping_columns: list[Column] = field(default_factory=list)
     expected_type: str | None = None
     insert_columns: list[Column] = field(default_factory=list)
 
@@ -131,7 +127,12 @@ class GrammarGenerator:
 
     def _generate_choice(self, rule_name: str, rule_def: dict, context: GenerationContext) -> SQLNode | None:
         if rule_name == "select_list_item" and context.grouping_columns:
-            return self._generate_rule("aggregate_function", context)
+            if random.random() < 0.5:
+                grouping_col = random.choice(context.grouping_columns)
+                return ColumnNode(grouping_col)
+            else:
+                return self._generate_rule("aggregate_function", context)
+
         weights_config = self.config.get('rule_choice_weights', {}).get(rule_name, {})
         options = rule_def["options"]; weights = [weights_config.get(opt, 1.0) for opt in options]
         chosen_rule = random.choices(options, weights=weights, k=1)[0]
@@ -148,7 +149,6 @@ class GrammarGenerator:
         context.expected_type = None
         
         if not elements: return None
-        # --- Rich AST Node Instantiation ---
         if rule_name == 'select_stmt': return SelectNode(elements.get('select_list'), elements.get('from_clause'), elements.get('where_clause'), elements.get('group_by_clause'), elements.get('limit_clause'))
         if rule_name == 'create_table_stmt': return CreateTableNode(elements.get('table_name'), elements.get('column_definitions'))
         if rule_name == 'insert_stmt': return InsertNode(elements.get('table_name'), elements.get('column_list'), elements.get('literal_list'))
@@ -157,8 +157,7 @@ class GrammarGenerator:
             col_node = elements.get('column_name')
             if isinstance(col_node, ColumnNode): context.expected_type = col_node.column.data_type
             return BinaryOpNode(col_node, elements.get('comparison_op').to_sql(), self._generate_rule('literal', context))
-        if rule_name == 'where_clause':
-            return WhereClauseNode(list(elements.values()))
+        if rule_name == 'where_clause': return WhereClauseNode(list(elements.values()))
 
         return SequenceNode(list(elements.values()), separator=rule_def.get("separator", " "))
 
@@ -197,7 +196,6 @@ class GrammarGenerator:
             if is_literal_list and context.insert_columns:
                 column_for_this_literal = context.insert_columns.pop(0)
                 return LiteralNode(self._generate_typed_literal(column_for_this_literal.data_type))
-            
             return LiteralNode(self._generate_typed_literal(context.expected_type))
 
         if rule_name == "data_type": return RawSQL(random.choice(['INT PRIMARY KEY', 'TEXT', 'NUMERIC', 'BOOLEAN']))
