@@ -1,10 +1,11 @@
-# This is the central orchestrator of the fuzzing process. This optimized
-# version includes more robust initialization, graceful shutdown logic,
-# dynamic oracle loading, and a clearer, more insightful main fuzzing loop.
+# This is the definitive, complete, and optimized version of the fuzzer engine.
+# It is re-architected to support stateful fuzzing sessions and correctly
+# integrates the hybrid generative/mutational engine for all phases of testing.
 
 import logging
 import random
 import time
+import os
 from config import FuzzerConfig
 from core.grammar import Grammar
 from core.generator import GrammarGenerator, SQLNode
@@ -34,6 +35,9 @@ class FuzzerEngine:
         self.oracles: list[BaseOracle] = self._load_oracles()
         self.logger.info(f"Registered {len(self.oracles)} active oracles: {[o.__class__.__name__ for o in self.oracles]}")
 
+        # Setup for Corpus Evolution
+        self._setup_corpus_evolution()
+
     def _load_oracles(self) -> list[BaseOracle]:
         """Instantiates and registers all bug-finding oracles based on config."""
         oracles = []
@@ -43,6 +47,15 @@ class FuzzerEngine:
             if oracle_configs.get(name, {}).get('enabled', False):
                 oracles.append(oracle_class(self.db_executor, self.bug_reporter, self.config))
         return oracles
+
+    def _setup_corpus_evolution(self):
+        """Creates the directory for the evolved corpus if enabled."""
+        evo_config = self.config.get('corpus_evolution', {})
+        if evo_config.get('enabled', False):
+            directory = evo_config.get('directory')
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+                self.logger.info(f"Corpus Evolution enabled. Interesting queries will be saved to '{directory}'.")
 
     def run(self):
         """The main fuzzing loop, now structured around sessions."""

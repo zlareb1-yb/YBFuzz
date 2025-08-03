@@ -1,27 +1,31 @@
 # Implements a suite of advanced optimizer bug detection techniques, including
 # Differential Query Plans (DQP), Cardinality Estimation Restriction
 # Testing (CERT), and Constant Optimization Driven Testing (CODDTest).
+# This version also contributes to Corpus Evolution.
 
 import logging
 import re
 import time
+import hashlib
+import os
 from typing import Union, Optional
 from .base_oracle import BaseOracle
 from core.generator import SQLNode
-# Use a forward declaration for type hinting to avoid circular imports
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from core.generator import SQLNode
 
 class QPGOracle(BaseOracle):
     """
-    Detects optimizer bugs by analyzing and comparing query plans using
-    several advanced techniques.
+    Detects optimizer bugs by analyzing and comparing query plans and contributes
+    to corpus evolution by finding queries with unique execution plans.
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.logger = logging.getLogger(self.name)
         self.oracle_config = self.config.get('oracles', {}).get(self.name, {})
+        
+        # --- State for Corpus Evolution ---
+        self.seen_plan_structures = set()
+        self.evo_config = self.config.get('corpus_evolution', {})
+        self.evo_dir = self.evo_config.get('directory')
 
     def can_check(self, sql_or_ast: Union[str, 'SQLNode'], exception: Optional[Exception]) -> bool:
         """
@@ -48,6 +52,9 @@ class QPGOracle(BaseOracle):
             return
         
         plan_text = "\n".join(str(row[0]) for row in plan_result)
+        
+        # --- Corpus Evolution Check ---
+        self._check_for_new_plan_structure(sql_query, plan_text)
 
         # Run Cardinality Estimation check
         if self.oracle_config.get('enable_cert', False):
@@ -64,11 +71,48 @@ class QPGOracle(BaseOracle):
             self.logger.debug("Running CODDTest check...")
             self._run_codd_check(sql_query)
 
+    def _normalize_plan(self, plan_text: str) -> str:
+        """
+        Normalizes a query plan by removing volatile details like costs,
+        times, and memory usage, leaving only the structural information.
+        """
+        plan_text = re.sub(r'cost=[\d\.]+\.\.[\d\.]+', '', plan_text)
+        plan_text = re.sub(r'rows=\d+', '', plan_text)
+        plan_text = re.sub(r'width=\d+', '', plan_text)
+        plan_text = re.sub(r'actual time=[\d\.]+\.\.[\d\.]+', '', plan_text)
+        plan_text = re.sub(r'Memory: \w+', '', plan_text)
+        plan_text = re.sub(r'Buckets: \d+', '', plan_text)
+        plan_text = re.sub(r'fuzz_table_\d+_\d+', 'fuzz_table', plan_text)
+        return " ".join(plan_text.split())
+
+    def _save_to_evolved_corpus(self, sql_query: str, reason: str):
+        """Saves an interesting query to the evolved corpus directory."""
+        if not self.evo_config.get('enabled', False) or not self.evo_dir:
+            return
+        
+        try:
+            query_hash = hashlib.sha256(sql_query.encode()).hexdigest()
+            filepath = os.path.join(self.evo_dir, f"{query_hash}.sql")
+            
+            if not os.path.exists(filepath):
+                with open(filepath, 'w') as f:
+                    f.write(f"-- Reason: {reason}\n")
+                    f.write(sql_query)
+                self.logger.info(f"Saved new interesting query to corpus: {reason}")
+        except Exception as e:
+            self.logger.error(f"Failed to save query to evolved corpus: {e}")
+
+    def _check_for_new_plan_structure(self, sql_query: str, plan_text: str):
+        """Checks if the query produced a previously unseen plan structure."""
+        normalized_plan = self._normalize_plan(plan_text)
+        if normalized_plan not in self.seen_plan_structures:
+            self.seen_plan_structures.add(normalized_plan)
+            self._save_to_evolved_corpus(sql_query, "Discovered new query plan structure")
+
     def _parse_plan_for_rows(self, plan_text: str) -> list[tuple[int, int]]:
         """Parses EXPLAIN ANALYZE output for estimated vs actual rows."""
         row_estimates = []
         for line in plan_text.split('\n'):
-            # Regex to find "rows=123" and "actual ... rows=456" in the same line
             match = re.search(r'rows=(\d+).*actual.*rows=(\d+)', line)
             if match:
                 estimated = int(match.group(1))
@@ -82,7 +126,6 @@ class QPGOracle(BaseOracle):
         threshold = self.oracle_config.get('cert_threshold', 100)
 
         for estimated, actual in row_estimates:
-            # Avoid division by zero and check for massive over/under-estimation
             if actual > 0 and estimated > 0 and ((estimated / actual > threshold) or (actual / estimated > threshold)):
                 self.reporter.report_bug(
                     oracle_name=self.name,
@@ -93,12 +136,11 @@ class QPGOracle(BaseOracle):
                     actual_rows=actual,
                     full_plan=plan_text
                 )
-                break # Report once per plan to avoid noise
+                break
 
     def _run_dqp_check(self, sql_query: str):
         """Differential Query Plans (DQP) by creating a temporary index."""
-        # Find a simple equality predicate in a WHERE clause to index
-        match = re.search(r'WHERE\s+"([^"]+)"\s*=\s*\'?([^ \']+)\'?', sql_query, re.IGNORECASE)
+        match = re.search(r'WHERE\s+"([^"]+)"\s*=', sql_query, re.IGNORECASE)
         if not match: return
         
         column_to_index = match.group(1)
@@ -108,12 +150,10 @@ class QPGOracle(BaseOracle):
         
         index_name = f"ybfuzz_temp_idx_{int(time.time())}"
 
-        # Get the plan WITHOUT the index
         original_plan_res, _ = self.executor.execute_query(f"EXPLAIN {sql_query}")
         if not original_plan_res: return
         original_plan = "\n".join(row[0] for row in original_plan_res)
 
-        # Create index, get new plan, drop index
         setup_sqls = [f"CREATE INDEX {index_name} ON {table_name_with_schema} (\"{column_to_index}\");"]
         teardown_sqls = [f"DROP INDEX IF EXISTS {index_name};"]
         new_plan_res, exc = self.executor.execute_query_with_setup(setup_sqls, f"EXPLAIN {sql_query}", teardown_sqls)
@@ -121,7 +161,6 @@ class QPGOracle(BaseOracle):
         
         new_plan = "\n".join(row[0] for row in new_plan_res)
 
-        # Check if the plan failed to change to an index scan
         if "Index Scan" not in new_plan and "Seq Scan" in original_plan:
             self.reporter.report_bug(
                 oracle_name=self.name,
@@ -134,25 +173,20 @@ class QPGOracle(BaseOracle):
 
     def _run_codd_check(self, sql_query: str):
         """Constant Optimization Driven Testing (CODDTest)."""
-        # Find a simple numeric predicate in a WHERE clause
         match = re.search(r'(WHERE\s+.*[=\s><])(\d+\.?\d*)', sql_query, re.IGNORECASE)
         if not match: return
 
         prefix = match.group(1)
         original_literal = match.group(2)
         
-        # Create a new literal that is slightly different
         new_literal = str(float(original_literal) + random.uniform(1, 10))
-        variant_query = query.replace(f"{prefix}{original_literal}", f"{prefix}{new_literal}", 1)
+        variant_query = sql_query.replace(f"{prefix}{original_literal}", f"{prefix}{new_literal}", 1)
 
-        # Get the plans for both queries
         original_plan_res, _ = self.executor.execute_query(f"EXPLAIN {sql_query}")
         variant_plan_res, _ = self.executor.execute_query(f"EXPLAIN {variant_query}")
         if not original_plan_res or not variant_plan_res: return
 
-        # Normalize plans by removing specific costs/rows to compare structure
         normalize = lambda plan: [re.sub(r'\(cost=.*\)', '', line) for line in plan]
-        
         original_plan_structure = normalize([row[0] for row in original_plan_res])
         variant_plan_structure = normalize([row[0] for row in variant_plan_res])
 

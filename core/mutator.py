@@ -1,16 +1,18 @@
 # The intelligent mutational engine. This optimized version uses a simple
 # parser to understand query structure, allowing for robust, type-aware,
 # and vocabulary-aware mutations instead of simple regex replacements.
+# It correctly loads from both static and evolved corpuses.
 
 import logging
 import random
 import re
+import os
 from config import FuzzerConfig
 from utils.db_executor import Catalog
 
 class Mutator:
     """
-    Learns from a corpus of seed queries and performs intelligent,
+    Learns from a corpus of seed and evolved queries and performs intelligent,
     structure-aware mutations.
     """
     def __init__(self, config: FuzzerConfig, catalog: Catalog):
@@ -21,20 +23,43 @@ class Mutator:
         self.mutation_strategies = self._get_mutation_strategies()
 
     def _load_corpus(self) -> list[str]:
-        """Loads the seed queries from the corpus file."""
-        corpus_path = self.config.get('corpus', {}).get('seed_file')
-        if not corpus_path:
-            self.logger.warning("No corpus file specified. Mutational engine will be disabled.")
-            return []
+        """
+        Loads queries from the static seed file and all files in the
+        evolved corpus directory.
+        """
+        queries = []
         
-        try:
-            with open(corpus_path, 'r') as f:
-                queries = [line.strip() for line in f if not line.strip().startswith('--') and line.strip()]
-                self.logger.info(f"Loaded {len(queries)} queries from corpus file '{corpus_path}'.")
-                return queries
-        except FileNotFoundError:
-            self.logger.error(f"Corpus file not found at '{corpus_path}'. Mutational engine will be disabled.")
-            return []
+        # Load from static seed file
+        seed_path = self.config.get('corpus', {}).get('seed_file')
+        if seed_path:
+            try:
+                with open(seed_path, 'r') as f:
+                    seed_queries = [line.strip() for line in f if not line.strip().startswith('--') and line.strip()]
+                    queries.extend(seed_queries)
+                    self.logger.info(f"Loaded {len(seed_queries)} queries from seed corpus '{seed_path}'.")
+            except FileNotFoundError:
+                self.logger.error(f"Seed corpus file not found at '{seed_path}'.")
+
+        # Load from evolved corpus directory
+        evo_config = self.config.get('corpus_evolution', {})
+        if evo_config.get('enabled', False):
+            evo_dir = evo_config.get('directory')
+            if evo_dir and os.path.isdir(evo_dir):
+                evo_count = 0
+                for filename in os.listdir(evo_dir):
+                    filepath = os.path.join(evo_dir, filename)
+                    try:
+                        with open(filepath, 'r') as f:
+                            # Read the entire file, skipping comment lines
+                            content = "".join([line for line in f if not line.strip().startswith('--')])
+                            queries.append(content.strip())
+                            evo_count += 1
+                    except IOError as e:
+                        self.logger.warning(f"Could not read evolved corpus file '{filepath}': {e}")
+                if evo_count > 0:
+                    self.logger.info(f"Loaded {evo_count} queries from evolved corpus '{evo_dir}'.")
+        
+        return queries
 
     def _get_mutation_strategies(self) -> list[tuple[callable, float]]:
         """
@@ -74,6 +99,12 @@ class Mutator:
         self.logger.debug(f"Selected mutation strategy: {chosen_strategy.__name__}")
         mutated_query = chosen_strategy(original_query)
 
+        # If one mutation didn't change the query, try another one as a fallback
+        if mutated_query == original_query and len(self.mutation_strategies) > 1:
+            self.logger.debug("Initial mutation had no effect, trying a fallback strategy.")
+            fallback_strategy = random.choice([s for s in strategies if s != chosen_strategy])
+            mutated_query = fallback_strategy(original_query)
+
         self.logger.debug(f"Original: {original_query}")
         self.logger.debug(f"Mutated:  {mutated_query}")
         return mutated_query
@@ -81,14 +112,15 @@ class Mutator:
     def _mutate_literal(self, query: str) -> str:
         """
         Finds a literal value (number or string) and replaces it with a new random value.
-        Example: `WHERE price > 100.0` -> `WHERE price > 73.4`
         """
+        # Find numeric literals (e.g., 100, 12.34)
         numeric_literals = re.findall(r'([=\s><])(\d+\.?\d*)', query)
         if numeric_literals:
             prefix, literal_str = random.choice(numeric_literals)
-            new_literal = str(round(random.uniform(1, 200), 2))
+            new_literal = str(round(random.uniform(1, 200), 2)) if '.' in literal_str else str(random.randint(1, 200))
             return query.replace(f"{prefix}{literal_str}", f"{prefix}{new_literal}", 1)
 
+        # Find string literals (e.g., 'Category-5')
         string_literals = re.findall(r"([=\s><])'([^']+)'", query)
         if string_literals:
             prefix, literal_str = random.choice(string_literals)
@@ -100,7 +132,6 @@ class Mutator:
     def _mutate_comparison_operator(self, query: str) -> str:
         """
         Finds a comparison operator and replaces it with another.
-        Example: `WHERE price > 100.0` -> `WHERE price <= 100.0`
         """
         operators = ['>', '<', '=', '<>', '>=', '<=']
         found_ops = [op for op in operators if op in query]
@@ -116,9 +147,7 @@ class Mutator:
         """
         Replaces an aggregate function name with a different one discovered
         from the catalog.
-        Example: `SELECT AVG(price)` -> `SELECT STDDEV(price)`
         """
-        # A simple list of common aggregate functions to look for
         known_aggregates = ['SUM', 'AVG', 'MIN', 'MAX', 'COUNT']
         found_aggregates = [agg for agg in known_aggregates if re.search(r'\b' + agg + r'\b', query, re.IGNORECASE)]
 

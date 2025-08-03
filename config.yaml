@@ -3,14 +3,14 @@
 # ==========================================================
 
 # --- Run Control ---
-duration: 300
-max_sessions: 500 # We now think in terms of sessions, not queries
-random_seed: null
-log_level: INFO
-log_file: "ybfuzz_run.log"
-bug_report_file: "bugs.log"
-sql_log_file: "executed_queries.sql"
-catalog_refresh_interval: 5 # Refresh more often in stateful mode
+duration: 300                  # Fuzzing duration in seconds
+max_sessions: 500              # Maximum number of sessions to generate
+random_seed: null              # Set to an integer for reproducible runs, or null for random
+log_level: INFO                # DEBUG, INFO, WARNING, ERROR
+log_file: "ybfuzz_run.log"       # Main log file
+bug_report_file: "bugs.log"    # File for detailed, structured bug reports
+sql_log_file: "executed_queries.sql" # A clean script for easy reproduction
+catalog_refresh_interval: 5    # How often (in sessions) to refresh the DB schema
 
 # --- Database Connection ---
 database:
@@ -22,33 +22,29 @@ database:
   schema_name: "ybfuzz_schema"
 
 # --- Initial Database State ---
+# SQL commands to run at the start of each fuzzing session.
+# Use '$$schema$$' as a placeholder for the schema_name above.
 initial_db_setup_sqls:
   - "CREATE TABLE $$schema$$.products (id INT PRIMARY KEY, name TEXT, category TEXT, price NUMERIC, stock_count INT);"
   - "INSERT INTO $$schema$$.products SELECT g, 'Product-' || g, 'Category-' || (g%10), g*1.5, g*10 FROM generate_series(1,100) g;"
-  - "CREATE TABLE $$schema$$.orders (order_id INT PRIMARY KEY, product_id INT, quantity INT, order_date DATE);"
-  - "INSERT INTO $$schema$$.orders SELECT g, 1 + (g%100), 1 + (g%5), '2025-01-01'::date + (g || ' days')::interval FROM generate_series(1, 200) g;"
 
 # --- Fuzzer Engine Strategy ---
 engine_strategy:
+  # Probability (0.0 to 1.0) of using the mutational engine.
   mutation_probability: 0.7
 
-# --- Corpus for Mutational Engine ---
+# --- Corpus Configuration ---
 corpus:
   seed_file: "corpus/seed_queries.txt"
 
+# --- Corpus Evolution Strategy ---
+# Allows the fuzzer to learn and save "interesting" queries.
+corpus_evolution:
+  enabled: true
+  directory: "evolved_corpus" # Discovered queries will be saved here
+
 # --- Grammar File for Generative Engine ---
 grammar_file: "core/grammar.yaml"
-
-# --- NEW: Stateful Session Strategy ---
-# Defines the "shape" of each test case. The engine will generate and execute
-# statements in this order before validating the final SELECT.
-session_strategy:
-  # Generate between 1 and 2 DDL statements (CREATE TABLE, VIEW, INDEX)
-  ddl_statements: [1, 2]
-  # Generate between 3 and 8 DML statements (INSERT, UPDATE, DELETE)
-  dml_statements: [3, 8]
-  # Always finish with 1 SELECT statement, which is passed to the oracles
-  final_select_statements: 1
 
 # --- Grammar and Generator Control ---
 max_recursion_depth:
@@ -64,14 +60,16 @@ statement_weights:
     insert_stmt: 50
     update_stmt: 40
     delete_stmt: 10
-  select_stmt: 100 # Only one option for the final select
+  select_stmt: 100
 
+# When a rule is a "choice" (A | B | C), these weights guide the selection.
 rule_choice_weights:
   select_list_item:
     column_name: 0.5
     aggregate_function: 0.4
     scalar_function: 0.1
 
+# Probabilities (0.0 to 1.0) for expanding optional or repeatable grammar rules.
 rule_expansion_probabilities:
   select_stmt:
     WHERE: 0.9
@@ -79,6 +77,18 @@ rule_expansion_probabilities:
     LIMIT: 0.4
   boolean_term:
     AND: 0.5
+
+# --- Mutator Strategy Control ---
+mutator_strategies:
+  mutate_literal:
+    enabled: true
+    weight: 1.0
+  mutate_comparison_operator:
+    enabled: true
+    weight: 0.8
+  mutate_function_name:
+    enabled: true
+    weight: 0.5
 
 # --- Oracle Configuration ---
 oracles:
@@ -95,4 +105,4 @@ oracles:
     enable_cert: true
     enable_dqp: true
     enable_coddtest: true
-    cert_threshold: 100
+    cert_threshold: 100 # Report bug if estimate is off by 100x
