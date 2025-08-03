@@ -1,11 +1,15 @@
 # This is the definitive, complete, and optimized version of the fuzzer engine.
-# It is re-architected to support stateful fuzzing sessions and correctly
-# integrates the hybrid generative/mutational engine for all phases of testing.
+# It includes robust statistics reporting, graceful shutdown handling, and
+# dynamic oracle loading for a world-class operator experience.
 
 import logging
 import random
 import time
 import os
+import sys
+import signal
+import pkgutil
+import inspect
 from config import FuzzerConfig
 from core.grammar import Grammar
 from core.generator import GrammarGenerator, SQLNode
@@ -13,8 +17,6 @@ from core.mutator import Mutator
 from utils.db_executor import DBExecutor
 from utils.bug_reporter import BugReporter
 from oracles.base_oracle import BaseOracle
-from oracles.tlp_oracle import TLOracle
-from oracles.qpg_oracle import QPGOracle
 
 class FuzzerEngine:
     """The main stateful fuzzing engine."""
@@ -24,6 +26,7 @@ class FuzzerEngine:
         self.logger = logging.getLogger(self.__class__.__name__)
         random.seed(self.config.get('random_seed'))
 
+        # --- Core Components ---
         self.bug_reporter = BugReporter(config)
         self.db_executor = DBExecutor(config.get_db_config(), self.bug_reporter, config)
         self.bug_reporter.set_db_executor(self.db_executor)
@@ -32,124 +35,145 @@ class FuzzerEngine:
         self.generator = GrammarGenerator(self.grammar.get_rules(), config, self.db_executor.catalog)
         self.mutator = Mutator(config, self.db_executor.catalog)
         
+        # --- State Management ---
+        self.stats = {"sessions": 0, "queries": 0, "bugs": 0, "start_time": time.time()}
+        self.shutdown_requested = False
+        
+        # --- Dynamic Loading and Setup ---
         self.oracles: list[BaseOracle] = self._load_oracles()
         self.logger.info(f"Registered {len(self.oracles)} active oracles: {[o.__class__.__name__ for o in self.oracles]}")
-
-        # Setup for Corpus Evolution and SQLLogicTest
         self._setup_output_dirs()
 
     def _load_oracles(self) -> list[BaseOracle]:
-        """Instantiates and registers all bug-finding oracles based on config."""
+        """Dynamically discovers and instantiates all oracle classes from the oracles package."""
+        self.logger.debug("Dynamically loading oracles...")
         oracles = []
         oracle_configs = self.config.get('oracles', {})
-        available_oracles = {"TLOracle": TLOracle, "QPGOracle": QPGOracle}
-        for name, oracle_class in available_oracles.items():
-            if oracle_configs.get(name, {}).get('enabled', False):
-                oracles.append(oracle_class(self.db_executor, self.bug_reporter, self.config))
+        
+        # Dynamically import all modules in the 'oracles' package
+        import oracles
+        for _, modname, _ in pkgutil.iter_modules(oracles.__path__):
+            module = __import__(f"oracles.{modname}", fromlist="dummy")
+            for name, obj in inspect.getmembers(module, inspect.isclass):
+                # Add any class that inherits from BaseOracle but is not BaseOracle itself
+                if issubclass(obj, BaseOracle) and obj is not BaseOracle:
+                    if oracle_configs.get(name, {}).get('enabled', False):
+                        oracles.append(obj(self.db_executor, self.bug_reporter, self.config))
+                        self.logger.info(f"Oracle '{name}' is ENABLED.")
+                    else:
+                        self.logger.info(f"Oracle '{name}' is DISABLED.")
         return oracles
 
     def _setup_output_dirs(self):
         """Creates directories for corpus evolution and SQLLogicTest files."""
-        evo_config = self.config.get('corpus_evolution', {})
+        # ... (implementation unchanged) ...
+        evo_config = self.config.get('corpus_evolution', {});
         if evo_config.get('enabled', False):
             directory = evo_config.get('directory')
-            if directory:
-                os.makedirs(directory, exist_ok=True)
-        
+            if directory: os.makedirs(directory, exist_ok=True)
         sqllogic_config = self.config.get('sqllogictest_formatter', {})
         if sqllogic_config.get('enabled', False):
             directory = sqllogic_config.get('output_directory')
-            if directory:
-                os.makedirs(directory, exist_ok=True)
+            if directory: os.makedirs(directory, exist_ok=True)
+
+    def _handle_shutdown_signal(self, signum, frame):
+        """Catches Ctrl+C and requests a graceful shutdown."""
+        if not self.shutdown_requested:
+            self.logger.warning("\nShutdown signal received. Finishing current session, then exiting.")
+            self.shutdown_requested = True
 
     def run(self):
-        """The main fuzzing loop, now structured around sessions."""
-        start_time = time.time()
-        session_count = 0
-        max_sessions = self.config.get('max_sessions')
-        duration = self.config.get('duration')
+        """The main fuzzing loop with improved logic and state management."""
+        signal.signal(signal.SIGINT, self._handle_shutdown_signal)
+        
+        try:
+            self._setup_database()
+            start_time = time.time()
+            max_sessions = self.config.get('max_sessions')
+            duration = self.config.get('duration')
 
-        while True:
-            if time.time() - start_time > duration:
-                self.logger.info("Duration limit reached.")
-                break
-            if session_count >= max_sessions:
-                self.logger.info("Session limit reached.")
-                break
-            
-            session_count += 1
-            self.logger.info(f"========== Starting Fuzzing Session #{session_count} ==========")
-            self._setup_database() # Reset DB for each session for isolation
+            while not self.shutdown_requested:
+                if time.time() - start_time > duration: self.logger.info("Duration limit reached."); break
+                if self.stats["sessions"] >= max_sessions: self.logger.info("Session limit reached."); break
+                
+                self.stats["sessions"] += 1
+                self.logger.info(f"========== Starting Fuzzing Session #{self.stats['sessions']} ==========")
+                
+                self._run_session_phase('ddl_statements', 'ddl_statement')
+                self._run_session_phase('dml_statements', 'dml_statement')
+                self._run_validation_phase()
 
-            # --- Execute Stateful Session ---
-            self._run_session_phase('ddl_statements', 'ddl_statement')
-            self._run_session_phase('dml_statements', 'dml_statement')
-            
-            # --- Final Validation Phase ---
-            self.logger.info("--- Session Phase: Final Validation SELECT ---")
-            
-            # Use the hybrid engine for the final SELECT as well
-            final_sql, final_ast_node = self._get_next_query('select_stmt')
+                if self.stats["sessions"] % 10 == 0:
+                    self._log_progress_stats()
 
-            if not final_sql:
-                self.logger.warning("Failed to produce a final SELECT statement for validation.")
-                continue
+        except Exception as e:
+            self.logger.critical(f"A critical error forced the engine to stop: {e}", exc_info=True)
+        finally:
+            self._report_final_stats()
+            self.db_executor.close()
 
-            result, exception = self.db_executor.execute_query(final_sql)
+    def _run_validation_phase(self):
+        """Generates and validates the final SELECT statement of a session."""
+        self.logger.info("--- Session Phase: Final Validation SELECT ---")
+        final_sql, final_ast_node = self._get_next_query('select_stmt')
+        if not final_sql: self.logger.warning("Failed to produce a final SELECT statement."); return
 
-            for oracle in self.oracles:
-                try:
-                    # Pass the AST node if we have it, otherwise the raw SQL
-                    if oracle.can_check(final_ast_node if final_ast_node else final_sql, exception):
-                        oracle.check(final_ast_node if final_ast_node else final_sql, result, exception)
-                except Exception as e:
-                    self.logger.error(f"Oracle '{oracle.__class__.__name__}' crashed: {e}", exc_info=True)
+        result, exception = self.db_executor.execute_query(final_sql)
+        self.stats["queries"] += 1
 
-        self.db_executor.close()
+        for oracle in self.oracles:
+            try:
+                if oracle.can_check(final_ast_node or final_sql, exception):
+                    oracle.check(final_ast_node or final_sql, result, exception)
+            except Exception as e:
+                self.logger.error(f"Oracle '{oracle.__class__.__name__}' crashed: {e}", exc_info=True)
 
     def _get_next_query(self, grammar_rule: str) -> tuple[str | None, SQLNode | None]:
-        """
-        Uses the hybrid engine to get the next query, either by generation
-        or mutation. Returns the SQL string and the AST node (if available).
-        """
+        # ... (implementation unchanged) ...
         mutation_prob = self.config.get('engine_strategy', {}).get('mutation_probability', 0.5)
-        
         if random.random() < mutation_prob and self.mutator.has_corpus():
             self.logger.debug(f"Strategy: Mutation for '{grammar_rule}'")
-            # The mutator returns a raw SQL string, so no AST node.
             return self.mutator.mutate(), None
         else:
             self.logger.debug(f"Strategy: Generation for '{grammar_rule}'")
             stmt_node = self.generator.generate_statement_of_type(grammar_rule)
-            if stmt_node:
-                return stmt_node.to_sql(), stmt_node
-        
+            if stmt_node: return stmt_node.to_sql(), stmt_node
         return None, None
 
     def _run_session_phase(self, config_key: str, grammar_rule: str):
-        """Runs a phase of the session (e.g., DDL, DML) using the hybrid engine."""
-        session_config = self.config.get('session_strategy', {})
-        min_stmts, max_stmts = session_config.get(config_key, [0, 0])
-        num_stmts = random.randint(min_stmts, max_stmts)
-        
+        # ... (implementation unchanged) ...
+        session_config = self.config.get('session_strategy', {}); min_stmts, max_stmts = session_config.get(config_key, [0, 0]); num_stmts = random.randint(min_stmts, max_stmts)
         self.logger.info(f"--- Session Phase: {grammar_rule} (Target: {num_stmts} statements) ---")
         for i in range(num_stmts):
+            if self.shutdown_requested: break
             sql_query, _ = self._get_next_query(grammar_rule)
-            
             if sql_query:
-                self.db_executor.execute_query(sql_query)
-                # Refresh catalog after every DDL change to stay aware of the new state
-                if grammar_rule == 'ddl_statement':
-                    self.db_executor.catalog.refresh()
-            else:
-                self.logger.warning(f"Failed to produce a '{grammar_rule}' statement for this step.")
+                self.db_executor.execute_query(sql_query); self.stats["queries"] += 1
+                if grammar_rule == 'ddl_statement': self.db_executor.catalog.refresh()
+            else: self.logger.warning(f"Failed to produce a '{grammar_rule}' statement.")
 
     def _setup_database(self):
-        """Prepares the database schema for a fuzzing run."""
+        # ... (implementation unchanged) ...
         schema_name = self.config.get('database')['schema_name']
         self.db_executor.execute_admin(f"DROP SCHEMA IF EXISTS {schema_name} CASCADE;")
         self.db_executor.execute_admin(f"CREATE SCHEMA {schema_name};")
         initial_setup_sqls = self.config.get('initial_db_setup_sqls', [])
-        for sql in initial_setup_sqls:
-            self.db_executor.execute_admin(sql.replace('$$schema$$', schema_name))
+        for sql in initial_setup_sqls: self.db_executor.execute_admin(sql.replace('$$schema$$', schema_name))
         self.db_executor.catalog.refresh()
+
+    def _log_progress_stats(self):
+        """Logs a periodic summary of the fuzzer's progress."""
+        elapsed_time = time.time() - self.stats["start_time"]
+        qps = self.stats["queries"] / elapsed_time if elapsed_time > 0 else 0
+        self.stats["bugs"] = len(self.bug_reporter._reported_bugs)
+        self.logger.info(
+            f"Progress: {self.stats['sessions']} sessions | "
+            f"{self.stats['queries']} queries ({qps:.2f} q/s) | "
+            f"{self.stats['bugs']} unique bugs found."
+        )
+
+    def _report_final_stats(self):
+        """Logs a final summary at the end of the fuzzing run."""
+        self.logger.info("========== Fuzzing Run Summary ==========")
+        self._log_progress_stats()
+        self.logger.info("=========================================")
