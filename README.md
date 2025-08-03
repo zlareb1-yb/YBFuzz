@@ -14,9 +14,11 @@ It combines a grammar-driven engine that generates novel queries from scratch wi
 * **Pluggable Bug-Finding Oracles:** A suite of advanced, configurable oracles to detect a wide range of bugs:
     * **TLP (Ternary Logic Partitioning):** Finds correctness bugs in `WHERE` clause logic.
     * **NoREC (Non-optimizing Reference Engine):** Finds logic bugs by disabling optimizer features and comparing results.
-    * **DQP (Differential Query Plans):** Finds optimizer bugs by comparing query plans before and after schema changes (e.g., adding an index).
-    * **CERT (Cardinality Estimation Testing):** Finds planner bugs by validating row count estimates against actual results.
+    * **DQP (Differential Query Plans):** Finds optimizer bugs and performance regressions by comparing query plans before and after schema changes (e.g., adding an index).
+    * **CERT (Cardinality Estimation Testing):** Finds planner bugs by validating row count estimates against actual results, which is a primary cause of poor query performance.
     * **CODDTest (Constant Optimization Driven Testing):** Finds optimizer stability bugs by comparing query plans after minor changes to literal values.
+
+* **Performance Bug Detection:** The framework is explicitly designed to find performance issues by analyzing query plans, validating optimizer choices, and checking for cardinality misestimations.
 
 * **Autonomous & Scalable:** Designed to learn new SQL functions and types automatically from `pg_catalog` and new syntax from a simple corpus file, making it easy to scale testing as YugabyteDB evolves.
 
