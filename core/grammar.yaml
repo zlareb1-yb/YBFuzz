@@ -1,0 +1,123 @@
+# ===================================================================
+# YBFuzz SQL Grammar Definition
+# ===================================================================
+# This file defines the SQL grammar used by the generative fuzzer.
+# It is designed to be human-readable and easily extensible.
+
+# --- Top Level Statements ---
+statement:
+  type: choice
+  options: [select_stmt]
+
+# --- SELECT Statement Breakdown ---
+select_stmt:
+  type: sequence
+  elements:
+    - { rule: "SELECT", type: keyword }
+    - { rule: select_list, type: non_terminal }
+    - { rule: from_clause, type: non_terminal }
+    - { rule: where_clause, type: non_terminal, optional: true, config_key: "WHERE" }
+    - { rule: group_by_clause, type: non_terminal, optional: true, config_key: "GROUP_BY" }
+    - { rule: limit_clause, type: non_terminal, optional: true, config_key: "LIMIT" }
+
+select_list:
+  type: sequence
+  elements:
+    - { rule: select_list_item, type: non_terminal, repeatable: true, separator: ", " }
+
+select_list_item:
+  type: choice
+  options: [column_name, aggregate_function, scalar_function]
+
+aggregate_function:
+  type: sequence
+  elements:
+    - { rule: aggregate_op, type: non_terminal }
+    - { rule: "(", type: keyword }
+    - { rule: column_name, type: non_terminal }
+    - { rule: ")", type: keyword }
+
+aggregate_op:
+  type: choice
+  options: ["SUM", "AVG", "MIN", "MAX", "COUNT"]
+
+from_clause:
+  type: sequence
+  elements:
+    - { rule: "FROM", type: keyword }
+    - { rule: table_name, type: non_terminal }
+
+where_clause:
+  type: sequence
+  elements:
+    - { rule: "WHERE", type: keyword }
+    - { rule: expression, type: non_terminal }
+
+group_by_clause:
+  type: sequence
+  elements:
+    - { rule: "GROUP BY", type: keyword }
+    - { rule: group_by_list, type: non_terminal }
+
+group_by_list:
+  type: sequence
+  elements:
+    - { rule: column_name, type: non_terminal, repeatable: true, separator: ", " }
+
+limit_clause:
+  type: sequence
+  elements:
+    - { rule: "LIMIT", type: keyword }
+    - { rule: integer_literal, type: non_terminal }
+
+# --- Expressions (Highly Recursive) ---
+expression:
+  type: choice
+  options: [boolean_expression]
+
+boolean_expression:
+  type: sequence
+  elements:
+    - { rule: boolean_term, type: non_terminal }
+    - { rule: boolean_expression_suffix, type: non_terminal, optional: true, config_key: "OR" }
+
+boolean_expression_suffix:
+  type: sequence
+  elements:
+    - { rule: "OR", type: keyword }
+    - { rule: boolean_term, type: non_terminal }
+
+boolean_term:
+  type: sequence
+  elements:
+    - { rule: boolean_factor, type: non_terminal }
+    - { rule: boolean_term_suffix, type: non_terminal, optional: true, config_key: "AND" }
+
+boolean_term_suffix:
+  type: sequence
+  elements:
+    - { rule: "AND", type: keyword }
+    - { rule: boolean_factor, type: non_terminal }
+
+boolean_factor:
+  type: choice
+  options: [comparison_predicate]
+
+comparison_predicate:
+  type: sequence
+  elements:
+    - { rule: column_name, type: non_terminal }
+    - { rule: comparison_op, type: non_terminal }
+    - { rule: literal, type: non_terminal }
+
+comparison_op:
+  type: choice
+  options: ["=", "<>", "<", "<=", ">", ">="]
+
+# --- Terminals / Placeholders ---
+# These are special rules that the generator resolves dynamically.
+table_name: { type: terminal }
+column_name: { type: terminal }
+literal: { type: terminal }
+integer_literal: { type: terminal }
+scalar_function: { type: terminal }
