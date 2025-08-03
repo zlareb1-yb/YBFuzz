@@ -1,5 +1,5 @@
 # ==========================================================
-# YBFuzz Framework Configuration
+# YBFuzz Framework Configuration (Definitive Edition)
 # ==========================================================
 
 # --- Run Control ---
@@ -43,6 +43,10 @@ corpus_evolution:
   enabled: true
   directory: "evolved_corpus" # Discovered queries will be saved here
 
+# --- Test Case Reducer Configuration ---
+reducer:
+  enabled: true
+
 # --- Grammar File for Generative Engine ---
 grammar_file: "core/grammar.yaml"
 
@@ -77,6 +81,12 @@ rule_expansion_probabilities:
     LIMIT: 0.4
   boolean_term:
     AND: 0.5
+
+# --- Stateful Session Strategy ---
+session_strategy:
+  ddl_statements: [1, 2]
+  dml_statements: [3, 8]
+  final_select_statements: 1
 
 # --- Mutator Strategy Control ---
 mutator_strategies:

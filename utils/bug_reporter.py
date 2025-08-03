@@ -1,7 +1,8 @@
 # A centralized module for formatting and logging detected bugs.
 # This optimized version provides structured JSON output, automatic
 # bug deduplication, and captures rich historical context to make
-# bug reproduction and analysis trivial.
+# bug reproduction and analysis trivial. It also integrates with the
+# DeltaReducer to automatically minimize failing test cases.
 
 import logging
 import json
@@ -12,6 +13,7 @@ from config import FuzzerConfig
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .db_executor import DBExecutor
+    from reducer.delta_reducer import DeltaReducer
 
 
 class BugReporter:
@@ -33,14 +35,22 @@ class BugReporter:
         # --- Config for Corpus Evolution ---
         self.evo_config = self.config.get('corpus_evolution', {})
         self.evo_dir = self.evo_config.get('directory')
+        
+        # --- Reducer instance and config ---
+        self.reducer: 'DeltaReducer' | None = None
+        self.reducer_enabled = self.config.get('reducer', {}).get('enabled', False)
 
     def set_db_executor(self, executor: 'DBExecutor'):
         """
-        Sets the DBExecutor instance to allow access to query history.
+        Sets the DBExecutor instance and initializes the reducer which depends on it.
         This is called after all core components are initialized to prevent
         circular dependencies.
         """
         self.db_executor = executor
+        if self.reducer_enabled:
+            # Late import to prevent circular dependency
+            from reducer.delta_reducer import DeltaReducer
+            self.reducer = DeltaReducer(self.db_executor, self)
 
     def _setup_bug_logger(self):
         """Sets up a dedicated logger for structured bug reports."""
@@ -66,7 +76,7 @@ class BugReporter:
         return f"{bug_type}|{error_message}"
 
     def _save_to_evolved_corpus(self, sql_query: str, reason: str):
-        """Saves a bug-triggering query to the evolved corpus directory."""
+        """Saves an interesting query to the evolved corpus directory."""
         if not self.evo_config.get('enabled', False) or not self.evo_dir:
             return
         
@@ -79,19 +89,14 @@ class BugReporter:
                 with open(filepath, 'w') as f:
                     f.write(f"-- Reason: {reason}\n")
                     f.write(sql_query)
-                logging.getLogger(self.__class__.__name__).info(f"Saved bug-triggering query to corpus.")
+                logging.getLogger(self.__class__.__name__).info(f"Saved interesting query to corpus: {reason}")
         except Exception as e:
             logging.getLogger(self.__class__.__name__).error(f"Failed to save query to evolved corpus: {e}")
 
     def report_bug(self, oracle_name: str, bug_type: str, description: str, **kwargs):
         """
-        Formats and logs a detailed bug report if it hasn't been seen before.
-
-        Args:
-            oracle_name: The name of the oracle that found the bug.
-            bug_type: A specific type for the bug (e.g., "NoREC - Inconsistent Results").
-            description: A human-readable description of the bug.
-            **kwargs: Any additional context (original_query, variant_query, etc.).
+        Formats and logs a detailed bug report. If enabled, it will first
+        attempt to minimize the failing query.
         """
         exception = kwargs.get('exception')
         signature = self._get_bug_signature(bug_type, exception)
@@ -103,10 +108,17 @@ class BugReporter:
         # This is a new bug, so we add it to our set and log it.
         self._reported_bugs.add(signature)
         
-        # --- Save the bug-triggering query to the corpus ---
-        # The 'original_query' is the most reliable one to save
         triggering_query = kwargs.get('original_query') or kwargs.get('query')
-        if triggering_query:
+        
+        # --- Run the reducer before reporting ---
+        minimized_query = None
+        if self.reducer and triggering_query and exception:
+            minimized_query = self.reducer.reduce(triggering_query, signature)
+            kwargs['minimized_query'] = minimized_query
+            # Save the minimized query to the corpus for future mutations
+            self._save_to_evolved_corpus(minimized_query, f"Triggered and minimized bug: {bug_type}")
+        elif triggering_query:
+            # If reducer is not active, still save the original bug-triggering query
             self._save_to_evolved_corpus(triggering_query, f"Triggered bug: {bug_type}")
         
         # --- Build Rich Context for the Report ---
