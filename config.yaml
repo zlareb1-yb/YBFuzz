@@ -14,10 +14,10 @@ catalog_refresh_interval: 5    # How often (in sessions) to refresh the DB schem
 
 # --- Database Connection ---
 database:
-  host: "127.0.0.1"
+  host: "10.9.86.186,10.9.139.177,10.9.205.248"
   port: 5433
   user: "yugabyte"
-  password: "yugabyte"
+  password: "Password#123"
   dbname: "yugabyte"
   schema_name: "ybfuzz_schema"
 
@@ -37,6 +37,12 @@ sanitizer:
 initial_db_setup_sqls:
   - "CREATE TABLE $$schema$$.products (id INT PRIMARY KEY, name TEXT, category TEXT, price NUMERIC, stock_count INT);"
   - "INSERT INTO $$schema$$.products SELECT g, 'Product-' || g, 'Category-' || (g%10), g*1.5, g*10 FROM generate_series(1,100) g;"
+  - "CREATE TABLE $$schema$$.orders (id SERIAL PRIMARY KEY, order_id INTEGER, product_id INTEGER, quantity INTEGER, price NUMERIC(10,2), order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP);"
+  - "INSERT INTO $$schema$$.orders (order_id, product_id, quantity, price) SELECT g, (g % 50) + 1, (g % 10) + 1, (g % 100) + 10.0 FROM generate_series(1,50) g;"
+  - "CREATE TABLE $$schema$$.customers (id SERIAL PRIMARY KEY, name TEXT, email TEXT, phone TEXT, address TEXT, created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP);"
+  - "INSERT INTO $$schema$$.customers (name, email, phone, address) SELECT 'Customer-' || g, 'customer' || g || '@example.com', '+1-555-' || LPAD(g::text, 4, '0'), 'Address ' || g || ', City, State' FROM generate_series(1,25) g;"
+  - "CREATE TABLE $$schema$$.categories (id SERIAL PRIMARY KEY, name TEXT, description TEXT, parent_id INTEGER);"
+  - "INSERT INTO $$schema$$.categories (name, description, parent_id) SELECT 'Category-' || g, 'Description for category ' || g, CASE WHEN g % 3 = 0 THEN NULL ELSE (g % 5) + 1 END FROM generate_series(1,10) g;"
 
 # --- Fuzzer Engine Strategy ---
 engine_strategy:

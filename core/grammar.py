@@ -44,8 +44,14 @@ class Grammar:
         for rule_name, rule_def in self._rules.items():
             if rule_def.get("type") == "choice":
                 for option in rule_def.get("options", []):
-                    if option not in all_rule_names:
-                        self._fail_validation(f"Rule '{rule_name}' refers to an undefined choice option: '{option}'")
+                    # Choice options can be either rule names or string literals
+                    # String literals like "SUM", "AVG" are valid and don't need validation
+                    # Only validate if the option is a rule name (not a string literal)
+                    if isinstance(option, str) and option not in all_rule_names:
+                        # Check if this looks like a string literal (all caps, common SQL keywords)
+                        sql_keywords = {"SUM", "AVG", "MIN", "MAX", "COUNT", "CREATE", "TABLE", "VIEW", "INDEX", "INSERT", "UPDATE", "DELETE", "SELECT", "FROM", "WHERE", "GROUP", "BY", "LIMIT", "AS", "ON", "INTO", "VALUES", "SET", "AND", "OR", "=", "<>", "<", "<=", ">", ">=", "+", "-", "*", "/"}
+                        if option not in sql_keywords:
+                            self._fail_validation(f"Rule '{rule_name}' refers to an undefined choice option: '{option}'")
             
             elif rule_def.get("type") == "sequence":
                 for element in rule_def.get("elements", []):

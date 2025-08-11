@@ -8,6 +8,7 @@ import re
 import time
 import hashlib
 import os
+import random
 from typing import Union, Optional
 from .base_oracle import BaseOracle
 from core.generator import SQLNode

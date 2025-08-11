@@ -47,7 +47,7 @@ class FuzzerEngine:
     def _load_oracles(self) -> list[BaseOracle]:
         """Dynamically discovers and instantiates all oracle classes from the oracles package."""
         self.logger.debug("Dynamically loading oracles...")
-        oracles = []
+        oracle_list = []
         oracle_configs = self.config.get('oracles', {})
         
         # Dynamically import all modules in the 'oracles' package
@@ -58,11 +58,11 @@ class FuzzerEngine:
                 # Add any class that inherits from BaseOracle but is not BaseOracle itself
                 if issubclass(obj, BaseOracle) and obj is not BaseOracle:
                     if oracle_configs.get(name, {}).get('enabled', False):
-                        oracles.append(obj(self.db_executor, self.bug_reporter, self.config))
+                        oracle_list.append(obj(self.db_executor, self.bug_reporter, self.config))
                         self.logger.info(f"Oracle '{name}' is ENABLED.")
                     else:
                         self.logger.info(f"Oracle '{name}' is DISABLED.")
-        return oracles
+        return oracle_list
 
     def _setup_output_dirs(self):
         """Creates directories for corpus evolution and SQLLogicTest files."""
@@ -153,13 +153,23 @@ class FuzzerEngine:
             else: self.logger.warning(f"Failed to produce a '{grammar_rule}' statement.")
 
     def _setup_database(self):
-        # ... (implementation unchanged) ...
-        schema_name = self.config.get('database')['schema_name']
+        """Sets up the initial database schema and tables for fuzzing."""
+        self.logger.info("Setting up database schema and initial tables...")
+        schema_name = self.config.get_db_config()['schema_name']
+        
+        # Drop and recreate the schema
         self.db_executor.execute_admin(f"DROP SCHEMA IF EXISTS {schema_name} CASCADE;")
         self.db_executor.execute_admin(f"CREATE SCHEMA {schema_name};")
+        
+        # Execute initial setup SQL commands
         initial_setup_sqls = self.config.get('initial_db_setup_sqls', [])
-        for sql in initial_setup_sqls: self.db_executor.execute_admin(sql.replace('$$schema$$', schema_name))
+        for sql in initial_setup_sqls:
+            sql_with_schema = sql.replace('$$schema$$', schema_name)
+            self.db_executor.execute_admin(sql_with_schema)
+        
+        # Refresh the catalog to discover the new schema
         self.db_executor.catalog.refresh()
+        self.logger.info(f"Database setup complete. Schema '{schema_name}' ready for fuzzing.")
 
     def _log_progress_stats(self):
         """Logs a periodic summary of the fuzzer's progress."""

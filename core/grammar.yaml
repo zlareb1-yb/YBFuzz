@@ -169,7 +169,39 @@ limit_clause:
 # --- Expressions (Highly Recursive) ---
 expression:
   type: choice
-  options: [boolean_expression]
+  options: [boolean_expression, arithmetic_expression, literal]
+
+arithmetic_expression:
+  type: sequence
+  elements:
+    - { rule: arithmetic_term, type: non_terminal }
+    - { rule: arithmetic_expression_suffix, type: non_terminal, optional: true, config_key: "PLUS_MINUS" }
+
+arithmetic_expression_suffix:
+  type: sequence
+  elements:
+    - { rule: arithmetic_operator, type: non_terminal }
+    - { rule: arithmetic_term, type: non_terminal }
+
+arithmetic_term:
+  type: sequence
+  elements:
+    - { rule: arithmetic_factor, type: non_terminal }
+    - { rule: arithmetic_term_suffix, type: non_terminal, optional: true, config_key: "MULT_DIV" }
+
+arithmetic_term_suffix:
+  type: sequence
+  elements:
+    - { rule: arithmetic_operator, type: non_terminal }
+    - { rule: arithmetic_factor, type: non_terminal }
+
+arithmetic_factor:
+  type: choice
+  options: [column_name, literal, function_call]
+
+arithmetic_operator:
+  type: choice
+  options: ["+", "-", "*", "/"]
 
 boolean_expression:
   type: sequence
@@ -220,3 +252,6 @@ data_type: { type: terminal }
 literal: { type: terminal }
 integer_literal: { type: terminal }
 scalar_function: { type: terminal }
+function_call: { type: terminal }
+comparison_op: { type: terminal }
+aggregate_op: { type: terminal }

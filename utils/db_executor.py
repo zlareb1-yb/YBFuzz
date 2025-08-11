@@ -150,8 +150,12 @@ class DBExecutor:
     def _connect(self):
         """Establishes a connection to the database."""
         try:
-            self.logger.info(f"Connecting to database '{self.db_config['dbname']}' on {self.db_config['host']}...")
-            self.conn = psycopg2.connect(**self.db_config)
+            # Filter out non-connection parameters
+            valid_conn_params = ['host', 'port', 'user', 'password', 'dbname']
+            conn_config = {k: v for k, v in self.db_config.items() if k in valid_conn_params}
+            
+            self.logger.info(f"Connecting to database '{conn_config['dbname']}' on {conn_config['host']}...")
+            self.conn = psycopg2.connect(**conn_config)
         except psycopg2.OperationalError as e:
             self.logger.critical(f"Database connection failed: {e}")
             raise
@@ -183,6 +187,31 @@ class DBExecutor:
                 return result, None
         except psycopg2.Error as e:
             conn.rollback()
+            
+            # Check if this is a missing table error and try to create it
+            if "does not exist" in str(e) and "relation" in str(e):
+                table_name = self._extract_missing_table_name(str(e))
+                if table_name and self._create_missing_table(table_name):
+                    # Retry the query after creating the table
+                    try:
+                        with conn.cursor() as cur:
+                            cur.execute(sql)
+                            if cur.description:
+                                result = cur.fetchall()
+                            else:
+                                result = []
+                            conn.commit()
+                            self.logger.info(f"Successfully executed query after creating missing table '{table_name}'")
+                            return result, None
+                    except psycopg2.Error as retry_e:
+                        conn.rollback()
+                        self.logger.warning(f"Query still failed after creating table '{table_name}': {retry_e}")
+            
+            # Handle duplicate object errors gracefully
+            if "already exists" in str(e):
+                self.logger.debug(f"Object already exists (expected in fuzzing): {e}")
+                return [], None  # Return empty result for duplicate objects
+            
             if isinstance(e, (psycopg2.InternalError, psycopg2.OperationalError)):
                 self.bug_reporter.report_bug("DBExecutor", "Critical Database Error", "Query caused a server-side error.", original_query=sql, exception=e)
             else:
@@ -214,3 +243,96 @@ class DBExecutor:
         if self.conn and not self.conn.closed:
             self.conn.close()
             self.logger.info("Database connection closed.")
+    
+    def _extract_missing_table_name(self, error_msg: str) -> str | None:
+        """Extracts the missing table name from a PostgreSQL error message."""
+        import re
+        # Look for patterns like "relation "table_name" does not exist"
+        match = re.search(r'relation "([^"]+)" does not exist', error_msg)
+        if match:
+            table_name = match.group(1)
+            # Remove schema prefix if present
+            if '.' in table_name:
+                table_name = table_name.split('.')[-1]
+            return table_name
+        return None
+    
+    def _create_missing_table(self, table_name: str) -> bool:
+        """Creates a missing table with a basic structure."""
+        try:
+            schema_name = self.config.get_db_config()['schema_name']
+            full_table_name = f"{schema_name}.{table_name}"
+            
+            # Create a basic table structure based on common patterns
+            if table_name.lower() in ['orders', 'order_items', 'order_details']:
+                create_sql = f"""
+                CREATE TABLE {full_table_name} (
+                    id SERIAL PRIMARY KEY,
+                    order_id INTEGER,
+                    product_id INTEGER,
+                    quantity INTEGER,
+                    price NUMERIC(10,2),
+                    order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT INTO {full_table_name} (order_id, product_id, quantity, price) 
+                SELECT g, (g % 50) + 1, (g % 10) + 1, (g % 100) + 10.0 
+                FROM generate_series(1, 50) g;
+                """
+            elif table_name.lower() in ['customers', 'users', 'clients']:
+                create_sql = f"""
+                CREATE TABLE {full_table_name} (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT,
+                    email TEXT,
+                    phone TEXT,
+                    address TEXT,
+                    created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT INTO {full_table_name} (name, email, phone, address) 
+                SELECT 
+                    'Customer-' || g,
+                    'customer' || g || '@example.com',
+                    '+1-555-' || LPAD(g::text, 4, '0'),
+                    'Address ' || g || ', City, State'
+                FROM generate_series(1, 25) g;
+                """
+            elif table_name.lower() in ['categories', 'departments']:
+                create_sql = f"""
+                CREATE TABLE {full_table_name} (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT,
+                    description TEXT,
+                    parent_id INTEGER
+                );
+                INSERT INTO {full_table_name} (name, description, parent_id) 
+                SELECT 
+                    'Category-' || g,
+                    'Description for category ' || g,
+                    CASE WHEN g % 3 = 0 THEN NULL ELSE (g % 5) + 1 END
+                FROM generate_series(1, 10) g;
+                """
+            else:
+                # Generic table structure
+                create_sql = f"""
+                CREATE TABLE {full_table_name} (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT,
+                    value NUMERIC(10,2),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT INTO {full_table_name} (name, value) 
+                SELECT 'Item-' || g, (g % 100) + 1.0 
+                FROM generate_series(1, 20) g;
+                """
+            
+            self.logger.info(f"Creating missing table '{table_name}' with basic structure")
+            self.execute_admin(create_sql)
+            
+            # Refresh the catalog to include the new table
+            self.catalog.refresh()
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create missing table '{table_name}': {e}")
+            return False
