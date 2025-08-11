@@ -98,6 +98,21 @@ class Mutator:
         
         self.logger.debug(f"Selected mutation strategy: {chosen_strategy.__name__}")
         mutated_query = chosen_strategy(original_query)
+        
+        # Validate the mutated query to ensure it's syntactically correct
+        if not self._is_valid_sql(mutated_query):
+            self.logger.warning(f"Generated invalid SQL, retrying mutation: {mutated_query[:100]}...")
+            # Try one more time with a different strategy
+            if len(strategies) > 1:
+                other_strategies = [s for s in strategies if s != chosen_strategy]
+                if other_strategies:
+                    retry_strategy = random.choice(other_strategies)
+                    mutated_query = retry_strategy(original_query)
+                    if not self._is_valid_sql(mutated_query):
+                        self.logger.error(f"Failed to generate valid SQL after retry")
+                        return None
+        
+        return mutated_query
 
         # If one mutation didn't change the query, try another one as a fallback
         if mutated_query == original_query and len(self.mutation_strategies) > 1:
@@ -200,3 +215,34 @@ class Mutator:
         
         # Use regex to replace the function name while preserving case-insensitivity
         return re.sub(r'\b' + agg_to_replace + r'\b', new_func, query, count=1, flags=re.IGNORECASE)
+
+    def _is_valid_sql(self, query: str) -> bool:
+        """
+        Basic validation to ensure the mutated query doesn't have obvious syntax errors.
+        """
+        # Check for common UPDATE syntax errors
+        if 'UPDATE' in query.upper() and 'SET' in query.upper():
+            # Ensure UPDATE statements use = for assignment, not comparison operators
+            set_pattern = r'SET\s+[^=]+=\s+[^;]+'
+            if not re.search(set_pattern, query, re.IGNORECASE):
+                return False
+            
+            # Check for comparison operators in SET clause (invalid)
+            if re.search(r'SET\s+[^=]+[<>]=?\s+[^;]+', query, re.IGNORECASE):
+                return False
+        
+        # Check for basic SQL structure
+        if not query.strip():
+            return False
+        
+        # Check for balanced parentheses
+        if query.count('(') != query.count(')'):
+            return False
+        
+        # Check for balanced quotes
+        single_quotes = query.count("'")
+        double_quotes = query.count('"')
+        if single_quotes % 2 != 0 or double_quotes % 2 != 0:
+            return False
+        
+        return True

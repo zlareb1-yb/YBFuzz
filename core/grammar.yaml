@@ -103,7 +103,12 @@ update_assignment:
   elements:
     - { rule: column_name, type: non_terminal }
     - { rule: "=", type: keyword }
-    - { rule: expression, type: non_terminal }
+    - { rule: update_expression, type: non_terminal }
+
+# --- UPDATE-specific Expression (no comparison operators) ---
+update_expression:
+  type: choice
+  options: [arithmetic_expression, literal, column_name]
 
 # --- SELECT Statement Breakdown ---
 select_stmt:
@@ -123,15 +128,19 @@ select_list:
 
 select_list_item:
   type: choice
-  options: [column_name, aggregate_function, scalar_function]
+  options: [column_name, aggregate_function]
 
 aggregate_function:
   type: sequence
   elements:
     - { rule: aggregate_op, type: non_terminal }
     - { rule: "(", type: keyword }
-    - { rule: column_name, type: non_terminal }
+    - { rule: aggregate_argument, type: non_terminal }
     - { rule: ")", type: keyword }
+
+aggregate_argument:
+  type: choice
+  options: [column_name, "*"]
 
 aggregate_op:
   type: choice
@@ -197,7 +206,7 @@ arithmetic_term_suffix:
 
 arithmetic_factor:
   type: choice
-  options: [column_name, literal, function_call]
+  options: [column_name, literal]
 
 arithmetic_operator:
   type: choice

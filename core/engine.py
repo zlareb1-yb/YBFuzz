@@ -29,7 +29,6 @@ class FuzzerEngine:
         # --- Core Components ---
         self.bug_reporter = BugReporter(config)
         self.db_executor = DBExecutor(config.get_db_config(), self.bug_reporter, config)
-        self.bug_reporter.set_db_executor(self.db_executor)
         
         self.grammar = Grammar(config.get('grammar_file'))
         self.generator = GrammarGenerator(self.grammar.get_rules(), config, self.db_executor.catalog)
@@ -65,15 +64,17 @@ class FuzzerEngine:
         return oracle_list
 
     def _setup_output_dirs(self):
-        """Creates directories for corpus evolution and SQLLogicTest files."""
+        """Creates directories for corpus evolution and bug reproductions."""
         evo_config = self.config.get('corpus_evolution', {});
         if evo_config.get('enabled', False):
             directory = evo_config.get('directory')
             if directory: os.makedirs(directory, exist_ok=True)
-        sqllogic_config = self.config.get('sqllogictest_formatter', {})
-        if sqllogic_config.get('enabled', False):
-            directory = sqllogic_config.get('output_directory')
-            if directory: os.makedirs(directory, exist_ok=True)
+        
+        # Create bug reproductions directory
+        bug_config = self.config.get('bug_reporting', {})
+        if bug_config.get('enabled', False):
+            repro_dir = bug_config.get('reproduction_dir', 'bug_reproductions')
+            os.makedirs(repro_dir, exist_ok=True)
 
     def _handle_shutdown_signal(self, signum, frame):
         """Catches Ctrl+C and requests a graceful shutdown."""
@@ -172,7 +173,8 @@ class FuzzerEngine:
         """Logs a periodic summary of the fuzzer's progress."""
         elapsed_time = time.time() - self.stats["start_time"]
         qps = self.stats["queries"] / elapsed_time if elapsed_time > 0 else 0
-        self.stats["bugs"] = len(self.bug_reporter._reported_bugs)
+        bug_summary = self.bug_reporter.get_bug_summary()
+        self.stats["bugs"] = bug_summary.get('total_bugs', 0)
         self.logger.info(
             f"Progress: {self.stats['sessions']} sessions | "
             f"{self.stats['queries']} queries ({qps:.2f} q/s) | "
@@ -182,5 +184,18 @@ class FuzzerEngine:
     def _report_final_stats(self):
         """Logs a final summary at the end of the fuzzing run."""
         self.logger.info("========== Fuzzing Run Summary ==========")
-        self._log_progress_stats()
+        
+        # Get bug summary from bug reporter
+        bug_summary = self.bug_reporter.get_bug_summary()
+        total_bugs = bug_summary.get('total_bugs', 0)
+        
+        self.logger.info(f"Progress: {self.stats['sessions']} sessions | {self.stats['queries']} queries ({self.stats['queries'] / max(1, time.time() - self.stats['start_time']):.2f} q/s) | {total_bugs} unique bugs found.")
+        
+        if total_bugs > 0:
+            self.logger.info(f"Bug Types: {', '.join([f'{k} ({v})' for k, v in bug_summary.get('bug_types', {}).items()])}")
+            self.logger.info(f"Detailed reproduction files: {bug_summary.get('reproduction_dir', 'bug_reproductions')}/")
+            
+            # Create bug summary report
+            self.bug_reporter.create_bug_report_summary()
+        
         self.logger.info("=========================================")

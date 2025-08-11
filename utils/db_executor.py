@@ -213,7 +213,53 @@ class DBExecutor:
                 return [], None  # Return empty result for duplicate objects
             
             if isinstance(e, (psycopg2.InternalError, psycopg2.OperationalError)):
-                self.bug_reporter.report_bug("DBExecutor", "Critical Database Error", "Query caused a server-side error.", original_query=sql, exception=e)
+                # Capture catalog snapshot for bug reproduction
+                catalog_snapshot = self._capture_catalog_snapshot()
+                self.bug_reporter.report_bug(
+                    "DBExecutor", 
+                    "Critical Database Error", 
+                    "Query caused a server-side error.", 
+                    original_query=sql, 
+                    exception=e,
+                    query_history=self.query_history[-10:],  # Last 10 queries for context
+                    catalog_snapshot=catalog_snapshot
+                )
+            elif "column.*is of type.*but expression is of type" in str(e):
+                # Type mismatch bug - this is a real bug
+                catalog_snapshot = self._capture_catalog_snapshot()
+                self.bug_reporter.report_bug(
+                    "DBExecutor",
+                    "Type Mismatch Bug",
+                    "Column type mismatch in UPDATE/SET statement.",
+                    original_query=sql,
+                    exception=e,
+                    query_history=self.query_history[-10:],
+                    catalog_snapshot=catalog_snapshot
+                )
+            elif "syntax error at or near" in str(e) and "UPDATE" in sql.upper():
+                # Syntax error in UPDATE statement - this could be a parser bug
+                catalog_snapshot = self._capture_catalog_snapshot()
+                self.bug_reporter.report_bug(
+                    "DBExecutor",
+                    "Syntax Error Bug",
+                    "Unexpected syntax error in UPDATE statement.",
+                    original_query=sql,
+                    exception=e,
+                    query_history=self.query_history[-10:],
+                    catalog_snapshot=catalog_snapshot
+                )
+            elif "null value in column.*violates not-null constraint" in str(e):
+                # Constraint violation bug
+                catalog_snapshot = self._capture_catalog_snapshot()
+                self.bug_reporter.report_bug(
+                    "DBExecutor",
+                    "Constraint Violation Bug",
+                    "Unexpected null value violation in INSERT/UPDATE.",
+                    original_query=sql,
+                    exception=e,
+                    query_history=self.query_history[-10:],
+                    catalog_snapshot=catalog_snapshot
+                )
             else:
                 self.logger.warning(f"Query failed with non-critical error: {e}")
             return None, e
@@ -336,3 +382,39 @@ class DBExecutor:
         except Exception as e:
             self.logger.error(f"Failed to create missing table '{table_name}': {e}")
             return False
+
+    def _capture_catalog_snapshot(self) -> Dict[str, Any]:
+        """Captures a snapshot of the current database catalog for bug reproduction."""
+        try:
+            snapshot = {
+                "tables": {},
+                "functions": [],
+                "types": []
+            }
+            
+            # Capture table schemas
+            if hasattr(self, 'catalog') and self.catalog:
+                for table in self.catalog.tables:
+                    if hasattr(table, 'name') and hasattr(table, 'columns'):
+                        table_info = {
+                            "name": table.name,
+                            "columns": []
+                        }
+                        for col in table.columns:
+                            if hasattr(col, 'name') and hasattr(col, 'data_type'):
+                                table_info["columns"].append({
+                                    "name": col.name,
+                                    "type": col.data_type
+                                })
+                        snapshot["tables"][table.name] = table_info
+                
+                # Capture functions and types if available
+                if hasattr(self.catalog, 'functions'):
+                    snapshot["functions"] = [f.name for f in self.catalog.functions[:20]]  # Limit to first 20
+                if hasattr(self.catalog, 'types'):
+                    snapshot["types"] = [t for t in self.catalog.types[:20]]  # Limit to first 20
+            
+            return snapshot
+        except Exception as e:
+            self.logger.warning(f"Failed to capture catalog snapshot: {e}")
+            return {}

@@ -131,3 +131,4 @@ Thumbs.db
 # YBFuzz run files
 executed_queries.sql
 ybfuzz_run.log
+bug_reproductions/

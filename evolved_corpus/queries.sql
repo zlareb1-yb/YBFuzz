@@ -1,1 +1,0 @@
--- Queries which have resulted in bugs in the past

@@ -142,14 +142,20 @@ class QPGOracle(BaseOracle):
 
         for estimated, actual in row_estimates:
             if actual > 0 and estimated > 0 and ((estimated / actual > threshold) or (actual / estimated > threshold)):
+                # Capture catalog snapshot for bug reproduction
+                catalog_snapshot = self.executor._capture_catalog_snapshot() if hasattr(self.executor, '_capture_catalog_snapshot') else {}
+                
                 self.reporter.report_bug(
                     oracle_name=self.name,
                     bug_type="CERT - Cardinality Misestimation",
                     description=f"Optimizer misestimated row count by more than {threshold}x.",
                     original_query=sql_query,
-                    estimated_rows=estimated,
-                    actual_rows=actual,
-                    full_plan=plan_text
+                    context={
+                        "estimated_rows": estimated,
+                        "actual_rows": actual,
+                        "full_plan": plan_text
+                    },
+                    catalog_snapshot=catalog_snapshot
                 )
                 break
 
@@ -177,13 +183,21 @@ class QPGOracle(BaseOracle):
         new_plan = "\n".join(row[0] for row in new_plan_res)
 
         if "Index Scan" not in new_plan and "Seq Scan" in original_plan:
+            # Capture catalog snapshot for bug reproduction
+            catalog_snapshot = self.executor._capture_catalog_snapshot() if hasattr(self.executor, '_capture_catalog_snapshot') else {}
+            
             self.reporter.report_bug(
                 oracle_name=self.name,
                 bug_type="DQP - No Plan Change",
                 description=f"Optimizer did not use a newly created, relevant index on column '{column_to_index}'.",
                 original_query=sql_query,
-                original_plan=original_plan,
-                new_plan_after_index=new_plan
+                context={
+                    "original_plan": original_plan,
+                    "new_plan_after_index": new_plan,
+                    "column_to_index": column_to_index,
+                    "table_name": table_name_with_schema
+                },
+                catalog_snapshot=catalog_snapshot
             )
 
     def _run_codd_check(self, sql_query: str):
@@ -225,6 +239,9 @@ class QPGOracle(BaseOracle):
 
         # Only report if there are significant structural changes
         if self._has_significant_plan_changes(original_plan, variant_plan):
+            # Capture catalog snapshot for bug reproduction
+            catalog_snapshot = self.executor._capture_catalog_snapshot() if hasattr(self.executor, '_capture_catalog_snapshot') else {}
+            
             self.reporter.report_bug(
                 oracle_name=self.name,
                 bug_type="CODDTest - Unstable Plan",
@@ -232,7 +249,14 @@ class QPGOracle(BaseOracle):
                 original_query=sql_query,
                 variant_query=variant_query,
                 original_plan=original_plan,
-                variant_plan=variant_plan
+                variant_plan=variant_plan,
+                context={
+                    "original_plan": original_plan,
+                    "variant_plan": variant_plan,
+                    "original_literal": original_literal,
+                    "new_literal": new_literal
+                },
+                catalog_snapshot=catalog_snapshot
             )
 
     def _is_type_casting_false_positive(self, original_plan: str, variant_plan: str, 

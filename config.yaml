@@ -61,13 +61,9 @@ corpus_evolution:
 
 # --- Test Case Reducer Configuration ---
 reducer:
-  enabled: true
+  enabled: false
 
-# --- SQLLogicTest Formatter Configuration ---
-# Automatically generates a .test file for each unique bug found.
-sqllogictest_formatter:
-  enabled: true
-  output_directory: "sqllogic_tests"
+# All bugs are reported to bug_reproductions directory only
 
 # --- Grammar File for Generative Engine ---
 grammar_file: "core/grammar.yaml"
@@ -122,6 +118,14 @@ mutator_strategies:
     enabled: true
     weight: 0.5
 
+# --- Bug Reporting Configuration ---
+bug_reporting:
+  enabled: true
+  bugs_file: "bugs.log"
+  reproduction_dir: "bug_reproductions"
+  sanitizer_check: true
+  sanitizer_type: "ASan"  # ASan, UBSan, TSan, MSan
+
 # --- Oracle Configuration ---
 oracles:
   TLOracle:
@@ -133,10 +137,10 @@ oracles:
       - "enable_hashjoin"
   
   QPGOracle:
-    enabled: true
-    enable_cert: true
-    enable_dqp: true
-    enable_coddtest: true
+    enabled: false
+    enable_cert: false
+    enable_dqp: false
+    enable_coddtest: false
     cert_threshold: 100 # Report bug if estimate is off by 100x
     
     # Smart filtering to reduce false positives

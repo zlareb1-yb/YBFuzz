@@ -119,7 +119,18 @@ class ColumnDefNode(SQLNode):
 class UpdateAssignmentNode(SQLNode):
     def __init__(self, column: ColumnNode, expression: SQLNode):
         super().__init__(); self.column = column; self.expression = expression
-    def to_sql(self) -> str: return f"{self.column.to_sql()} = {self.expression.to_sql()}"
+    
+    def to_sql(self) -> str: 
+        # Ensure we're generating assignment, not comparison
+        column_sql = self.column.to_sql()
+        expression_sql = self.expression.to_sql()
+        
+        # Validate that we're not accidentally using comparison operators
+        if any(op in expression_sql for op in ['<', '>', '<=', '>=', '<>']):
+            # Fallback to a safe assignment
+            return f"{column_sql} = {column_sql}"
+        
+        return f"{column_sql} = {expression_sql}"
 
 # --- Generation Context ---
 from dataclasses import dataclass, field
@@ -233,7 +244,18 @@ class GrammarGenerator:
             if isinstance(column_node, ColumnNode):
                 # Set the expected type for the expression to match the column type
                 context.expected_type = column_node.column.data_type
-            return UpdateAssignmentNode(column_node, element_nodes.get('expression'))
+                # Also set the current table context for better type inference
+                if hasattr(column_node.column, 'table') and column_node.column.table:
+                    context.current_table = column_node.column.table
+            return UpdateAssignmentNode(column_node, element_nodes.get('update_expression'))
+        
+        if rule_name == 'update_expression':
+            # For UPDATE expressions, prefer simple arithmetic or column references
+            # Avoid complex boolean expressions that might contain comparison operators
+            if random.random() < 0.7:  # 70% chance of simple arithmetic
+                return self._generate_rule('arithmetic_expression', context)
+            else:  # 30% chance of literal or column reference
+                return self._generate_rule('literal', context)
         if rule_name == 'comparison_predicate':
             col_node = element_nodes.get('column_name')
             if isinstance(col_node, ColumnNode): context.expected_type = col_node.column.data_type
@@ -261,10 +283,12 @@ class GrammarGenerator:
         if rule_name in ["new_view_name", "new_index_name"]:
             prefix = rule_name.split('_')[1]
             schema_name = self.config.get_db_config()['schema_name']
-            # Make names more unique to avoid conflicts
+            # Make names more unique to avoid conflicts, but avoid dots in names
             timestamp = int(time.time() * 1000)  # Use milliseconds for more uniqueness
             random_suffix = random.randint(1000, 9999)
-            return RawSQL(f'{schema_name}."fuzz_{prefix}_{timestamp}_{random_suffix}"')
+            # Generate clean names without dots to avoid syntax errors
+            clean_name = f"fuzz_{prefix}_{timestamp}_{random_suffix}"
+            return RawSQL(f'{schema_name}."{clean_name}"')
         
         if rule_name == "table_name":
             table = self.catalog.get_random_table()
@@ -304,17 +328,74 @@ class GrammarGenerator:
             if is_literal_list and context.insert_columns:
                 column_for_this_literal = context.insert_columns.pop(0)
                 return LiteralNode(self._generate_typed_literal(column_for_this_literal.data_type))
-            return LiteralNode(self._generate_typed_literal(context.expected_type))
+            
+            # If we have an expected type from context, use it
+            if context.expected_type:
+                return LiteralNode(self._generate_typed_literal(context.expected_type))
+            
+            # For UPDATE statements, try to infer the type from the column being updated
+            if context.recursion_depth.get("update_assignment", 0) > 0 and context.current_table:
+                # Try to find a column that matches the expected type
+                for col in context.current_table.columns:
+                    if col.data_type and any(t in col.data_type.lower() for t in ['int', 'numeric', 'text', 'bool']):
+                        return LiteralNode(self._generate_typed_literal(col.data_type))
+            
+            # Default to a safe integer
+            return LiteralNode(self._generate_typed_literal('int'))
 
         if rule_name == "data_type": return RawSQL(random.choice(['INT PRIMARY KEY', 'TEXT', 'NUMERIC', 'BOOLEAN']))
         if rule_name == "integer_literal": return LiteralNode(random.randint(1, 100))
-        if rule_name == "scalar_function": return self._generate_function_call(context)
-        if rule_name == "function_call": return self._generate_function_call(context)
+        if rule_name == "scalar_function": return None  # Disabled for now
+        if rule_name == "function_call": return None    # Disabled for now
         if rule_name == "comparison_op": 
             valid_ops = ['=', '<>', '<', '<=', '>', '>=']
             chosen_op = random.choice(valid_ops)
             return RawSQL(chosen_op)
-        if rule_name == "aggregate_op": return RawSQL(random.choice(['SUM', 'AVG', 'MIN', 'MAX', 'COUNT']))
+        if rule_name == "aggregate_op": 
+            # Only use well-known aggregate functions that are guaranteed to work
+            safe_aggregates = ['SUM', 'AVG', 'MIN', 'MAX', 'COUNT']
+            return RawSQL(random.choice(safe_aggregates))
+        
+        if rule_name == "aggregate_function":
+            # Ensure we have a valid column for the aggregate function
+            if not context.current_table:
+                return None
+            
+            # Get a numeric column for numeric aggregates, or any column for COUNT
+            aggregate_op = self._generate_rule("aggregate_op", context)
+            if not aggregate_op:
+                return None
+            
+            # For COUNT, use * or any column; for others, ONLY use columns
+            if aggregate_op.to_sql().upper() == 'COUNT':
+                # 90% chance to use * for COUNT (most reliable), 10% chance to use a column
+                if random.random() < 0.9:
+                    aggregate_arg = RawSQL("*")
+                else:
+                    column = self.catalog.get_random_column(context.current_table)
+                    if not column:
+                        aggregate_arg = RawSQL("*")
+                    else:
+                        aggregate_arg = ColumnNode(column)
+            else:
+                # For non-COUNT aggregates, ONLY use columns, NEVER *
+                column = self.catalog.get_random_column(context.current_table, of_type='numeric')
+                if not column:
+                    # Fallback to any column if no numeric column found
+                    column = self.catalog.get_random_column(context.current_table)
+                
+                if not column:
+                    return None
+                
+                aggregate_arg = ColumnNode(column)
+            
+            # Create the aggregate function node
+            return SequenceNode([
+                aggregate_op,
+                RawSQL("("),
+                aggregate_arg,
+                RawSQL(")")
+            ])
         
         self.logger.error(f"Unknown terminal rule: {rule_name}"); return None
 
@@ -324,7 +405,7 @@ class GrammarGenerator:
         
         sql_type = sql_type.lower()
         
-        if any(t in sql_type for t in ['int', 'integer', 'bigint', 'smallint']):
+        if any(t in sql_type for t in ['int', 'integer', 'bigint', 'smallint', 'serial']):
             return random.randint(-1000, 1000)
         elif any(t in sql_type for t in ['numeric', 'decimal', 'real', 'double', 'float']):
             return round(random.uniform(-1000.0, 1000.0), 2)
@@ -336,6 +417,12 @@ class GrammarGenerator:
             prefix = random.choice(prefixes)
             suffix = random.randint(1, 999)
             return f"{prefix}_{suffix}"
+        elif 'timestamp' in sql_type or 'date' in sql_type:
+            # Generate valid timestamp values
+            import datetime
+            base_date = datetime.datetime.now()
+            days_offset = random.randint(-365, 365)
+            return base_date + datetime.timedelta(days=days_offset)
         else:
             # For unknown types, return a safe integer
             return random.randint(1, 100)
@@ -343,24 +430,26 @@ class GrammarGenerator:
     def _generate_function_call(self, context: GenerationContext) -> SQLNode | None:
         if not self.catalog.functions: return None
         
-        # Filter functions to only use simple, well-known ones that are more likely to work
-        simple_functions = []
+        # Only use the most basic, guaranteed-to-work functions
+        safe_function_names = {
+            'length', 'upper', 'lower', 'trim', 'abs', 'round'
+        }
+        
+        # Filter to only safe functions
+        safe_functions = []
         for func in self.catalog.functions:
-            # Only use functions with simple argument types and avoid complex ones
-            if (len(func.arg_types) <= 3 and 
+            if (func.name.lower() in safe_function_names and 
+                len(func.arg_types) <= 3 and 
                 all(any(simple_type in arg_type.lower() for simple_type in ['int', 'text', 'numeric', 'bool', 'real', 'double']) 
                     for arg_type in func.arg_types)):
-                simple_functions.append(func)
+                safe_functions.append(func)
         
-        if not simple_functions:
-            # Fallback to basic functions if no simple ones found
-            simple_functions = [f for f in self.catalog.functions if len(f.arg_types) <= 2]
-        
-        if not simple_functions:
+        if not safe_functions:
+            # If no safe functions found, don't generate any function calls
             return None
         
-        for _ in range(10):  # Try more attempts
-            func = random.choice(simple_functions)
+        for _ in range(5):  # Try fewer attempts with safer functions
+            func = random.choice(safe_functions)
             args = []
             can_generate_args = True
             
@@ -378,8 +467,9 @@ class GrammarGenerator:
                 elif any(t in clean_type for t in ['bool', 'boolean']):
                     clean_type = 'bool'
                 else:
-                    # For unknown types, try to generate a reasonable default
-                    clean_type = 'int'
+                    # For unknown types, skip this function
+                    can_generate_args = False
+                    break
                 
                 arg_literal = self._generate_typed_literal(clean_type)
                 if arg_literal is not None:
