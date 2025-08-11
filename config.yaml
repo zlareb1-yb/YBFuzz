@@ -138,3 +138,9 @@ oracles:
     enable_dqp: true
     enable_coddtest: true
     cert_threshold: 100 # Report bug if estimate is off by 100x
+    
+    # Smart filtering to reduce false positives
+    enable_smart_filtering: true
+    filter_type_casting: true      # Filter out type casting changes
+    filter_storage_filters: true   # Filter out storage filter changes
+    min_significant_changes: 3    # Minimum structural changes to report as bug

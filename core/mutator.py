@@ -107,7 +107,25 @@ class Mutator:
 
         self.logger.debug(f"Original: {original_query}")
         self.logger.debug(f"Mutated:  {mutated_query}")
+        
+        # Log interesting mutations to the main SQL file
+        if mutated_query != original_query:
+            self._log_mutation_to_sql_file(original_query, mutated_query)
+        
         return mutated_query
+
+    def _log_mutation_to_sql_file(self, original_query: str, mutated_query: str):
+        """Logs interesting mutations to the main SQL file for easy access."""
+        try:
+            sql_log_file = self.config.get('sql_log_file', 'executed_queries.sql')
+            with open(sql_log_file, 'a') as f:
+                f.write(f"\n-- Mutation: {original_query[:50]}... -> {mutated_query[:50]}...\n")
+                f.write(f"-- Original: {original_query}\n")
+                f.write(f"-- Mutated:  {mutated_query}\n")
+                f.write(f"{mutated_query}\n")
+                f.write(";\n")
+        except Exception as e:
+            self.logger.warning(f"Failed to log mutation to SQL file: {e}")
 
     def _mutate_literal(self, query: str) -> str:
         """
