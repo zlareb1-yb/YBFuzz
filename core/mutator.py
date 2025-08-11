@@ -115,17 +115,29 @@ class Mutator:
         return mutated_query
 
     def _log_mutation_to_sql_file(self, original_query: str, mutated_query: str):
-        """Logs interesting mutations to the main SQL file for easy access."""
+        """Logs interesting mutations to the evolved corpus queries.sql file."""
         try:
-            sql_log_file = self.config.get('sql_log_file', 'executed_queries.sql')
-            with open(sql_log_file, 'a') as f:
-                f.write(f"\n-- Mutation: {original_query[:50]}... -> {mutated_query[:50]}...\n")
+            # Get the evolved corpus directory from config
+            evo_config = self.config.get('corpus_evolution', {})
+            evo_dir = evo_config.get('directory', 'evolved_corpus')
+            evo_queries_file = os.path.join(evo_dir, 'queries.sql')
+            
+            # Create the file if it doesn't exist
+            if not os.path.exists(evo_queries_file):
+                with open(evo_queries_file, 'w') as f:
+                    f.write("-- Queries which have resulted in bugs in the past\n")
+                    f.write("-- or have interesting query plan structures\n")
+                    f.write("-- including interesting mutations\n\n")
+            
+            # Append the mutation
+            with open(evo_queries_file, 'a') as f:
+                f.write(f"\n-- Interesting Mutation\n")
                 f.write(f"-- Original: {original_query}\n")
                 f.write(f"-- Mutated:  {mutated_query}\n")
                 f.write(f"{mutated_query}\n")
                 f.write(";\n")
         except Exception as e:
-            self.logger.warning(f"Failed to log mutation to SQL file: {e}")
+            self.logger.warning(f"Failed to log mutation to evolved corpus: {e}")
 
     def _mutate_literal(self, query: str) -> str:
         """

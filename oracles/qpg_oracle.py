@@ -93,29 +93,27 @@ class QPGOracle(BaseOracle):
         return " ".join(plan_text.split())
 
     def _save_to_evolved_corpus(self, sql_query: str, reason: str):
-        """Saves an interesting query to the evolved corpus and appends to queries.sql."""
+        """Saves an interesting query to the evolved corpus queries.sql file."""
         if not self.evo_config.get('enabled', False):
             return
         
         try:
-            # Save to evolved corpus directory (for backward compatibility)
-            if self.evo_dir:
-                query_hash = hashlib.sha256(sql_query.encode()).hexdigest()
-                filepath = os.path.join(self.evo_dir, f"{query_hash}.sql")
-                
-                if not os.path.exists(filepath):
-                    with open(filepath, 'w') as f:
-                        f.write(f"-- Reason: {reason}\n")
-                        f.write(f"{sql_query}\n")
+            # Append to the main evolved corpus queries.sql file
+            evo_queries_file = os.path.join(self.evo_dir, 'queries.sql') if self.evo_dir else 'evolved_corpus/queries.sql'
             
-            # Append to queries.sql for easy access
-            queries_sql_path = self.config.get('sql_log_file', 'executed_queries.sql')
-            with open(queries_sql_path, 'a') as f:
-                f.write(f"\n-- Evolved Corpus Query: {reason}\n")
+            # Create the file if it doesn't exist
+            if not os.path.exists(evo_queries_file):
+                with open(evo_queries_file, 'w') as f:
+                    f.write("-- Queries which have resulted in bugs in the past\n")
+                    f.write("-- or have interesting query plan structures\n\n")
+            
+            # Append the new query
+            with open(evo_queries_file, 'a') as f:
+                f.write(f"\n-- {reason}\n")
                 f.write(f"{sql_query}\n")
                 f.write(";\n")
             
-            self.logger.info(f"Saved new interesting query to corpus: {reason}")
+            self.logger.info(f"Saved new interesting query to evolved corpus: {reason}")
         except Exception as e:
             self.logger.error(f"Failed to save query to evolved corpus: {e}")
 
