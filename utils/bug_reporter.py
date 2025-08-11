@@ -55,11 +55,11 @@ class BugReporter:
                 "query_history": query_history or [],
                 "catalog_snapshot": catalog_snapshot or {}
             },
-            "environment": {
-                "database": self.config.get_db_config().get('dbname', 'unknown'),
-                "schema": self.config.get_db_config().get('schema_name', 'unknown'),
-                "config_file": getattr(self.config, 'config_file', 'config.yaml')
-            }
+                            "environment": {
+                    "database": self.config.get_db_config().get('dbname', 'unknown'),
+                    "schema": self.config.get_db_config().get('schema_name', 'unknown'),
+                    "config_file": 'config.yaml'
+                }
         }
         
         # Log to bugs.log

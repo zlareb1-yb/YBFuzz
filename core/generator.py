@@ -1,7 +1,7 @@
 # Contains the intelligent, recursive-descent query generator.
 # It correctly builds a rich, specific, and deeply nested Abstract Syntax Tree (AST)
 # for all supported SQL constructs. It includes all advanced semantic rule
-# enforcement and automatic vocabulary discovery integration, with no features removed.
+# enforcement and automatic vocabulary discovery integration.
 
 import logging
 import random
@@ -210,6 +210,14 @@ class GrammarGenerator:
             return SelectNode(element_nodes.get('select_list'), element_nodes.get('from_clause'), 
                            element_nodes.get('where_clause'), element_nodes.get('group_by_clause'), 
                            element_nodes.get('limit_clause'))
+        if rule_name == 'select_stmt_advanced':
+            # Generate advanced YugabyteDB queries with CTEs, JOINs, etc.
+            select_stmt = element_nodes.get('select_stmt')
+            if select_stmt:
+                return select_stmt  # Return the enhanced SELECT statement
+            else:
+                # Fallback to basic SELECT
+                return self._generate_rule('select_stmt', context)
         if rule_name == 'create_table_stmt': 
             return CreateTableNode(element_nodes.get('new_table_name'), element_nodes.get('column_definitions'))
         if rule_name == 'create_view_stmt': 
@@ -248,6 +256,41 @@ class GrammarGenerator:
                 if hasattr(column_node.column, 'table') and column_node.column.table:
                     context.current_table = column_node.column.table
             return UpdateAssignmentNode(column_node, element_nodes.get('update_expression'))
+        
+        if rule_name == 'cte_clause':
+            # Generate Common Table Expressions (CTEs)
+            cte_def = element_nodes.get('cte_definition')
+            if cte_def:
+                return cte_def
+            return None
+        
+        if rule_name == 'cte_definition':
+            # Generate CTE definition
+            cte_name = element_nodes.get('cte_name')
+            select_stmt = element_nodes.get('select_stmt')
+            if cte_name and select_stmt:
+                return SequenceNode([
+                    cte_name,
+                    RawSQL("AS"),
+                    RawSQL("("),
+                    select_stmt,
+                    RawSQL(")")
+                ])
+            return None
+        
+        if rule_name == 'join_clause':
+            # Generate JOIN clauses
+            join_type = element_nodes.get('join_type')
+            table_name = element_nodes.get('table_name')
+            join_condition = element_nodes.get('join_condition')
+            if join_type and table_name and join_condition:
+                return SequenceNode([
+                    join_type,
+                    table_name,
+                    RawSQL("ON"),
+                    join_condition
+                ])
+            return None
         
         if rule_name == 'update_expression':
             # For UPDATE expressions, prefer simple arithmetic or column references
@@ -291,7 +334,18 @@ class GrammarGenerator:
             return RawSQL(f'{schema_name}."{clean_name}"')
         
         if rule_name == "table_name":
-            table = self.catalog.get_random_table()
+            # For UPDATE and DELETE statements, we need to ensure we only target actual tables, not views
+            # Check if we're in an UPDATE or DELETE context
+            is_update_context = context.recursion_depth.get("update_stmt", 0) > 0
+            is_delete_context = context.recursion_depth.get("delete_stmt", 0) > 0
+            
+            if is_update_context or is_delete_context or context.recursion_depth.get("insert_stmt", 0) > 0:
+                # Only get actual tables, not views, for UPDATE/DELETE/INSERT operations
+                table = self.catalog.get_random_table(exclude_views=True)
+            else:
+                # For other operations (SELECT), views are fine
+                table = self.catalog.get_random_table()
+            
             if not table: return None
             context.current_table = table
             schema_name = self.config.get_db_config()['schema_name']
@@ -355,6 +409,18 @@ class GrammarGenerator:
             # Only use well-known aggregate functions that are guaranteed to work
             safe_aggregates = ['SUM', 'AVG', 'MIN', 'MAX', 'COUNT']
             return RawSQL(random.choice(safe_aggregates))
+        
+        if rule_name == "cte_name":
+            cte_names = ["cte", "temp_table", "result_set", "intermediate"]
+            return RawSQL(random.choice(cte_names))
+        
+        if rule_name == "join_type":
+            join_types = ["INNER JOIN", "LEFT JOIN", "RIGHT JOIN", "FULL JOIN", "CROSS JOIN"]
+            return RawSQL(random.choice(join_types))
+        
+        if rule_name == "yugabyte_function":
+            yb_functions = ["ybdump", "yb_servers", "yb_servers_rpc", "yb_servers_http", "yb_servers_metrics"]
+            return RawSQL(random.choice(yb_functions))
         
         if rule_name == "aggregate_function":
             # Ensure we have a valid column for the aggregate function

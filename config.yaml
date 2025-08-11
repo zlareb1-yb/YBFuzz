@@ -137,10 +137,10 @@ oracles:
       - "enable_hashjoin"
   
   QPGOracle:
-    enabled: false
-    enable_cert: false
-    enable_dqp: false
-    enable_coddtest: false
+    enabled: true
+    enable_cert: true
+    enable_dqp: true
+    enable_coddtest: true
     cert_threshold: 100 # Report bug if estimate is off by 100x
     
     # Smart filtering to reduce false positives

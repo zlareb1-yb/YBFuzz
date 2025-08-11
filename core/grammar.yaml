@@ -264,3 +264,82 @@ scalar_function: { type: terminal }
 function_call: { type: terminal }
 comparison_op: { type: terminal }
 aggregate_op: { type: terminal }
+
+# --- YugabyteDB-Specific Features ---
+cte_clause:
+  type: sequence
+  elements:
+    - { rule: "WITH", type: keyword }
+    - { rule: cte_definition, type: non_terminal }
+
+cte_definition:
+  type: sequence
+  elements:
+    - { rule: cte_name, type: non_terminal }
+    - { rule: "AS", type: keyword }
+    - { rule: "(", type: keyword }
+    - { rule: select_stmt, type: non_terminal }
+    - { rule: ")", type: keyword }
+
+cte_name: { type: terminal }
+
+# --- Advanced JOIN Support ---
+join_clause:
+  type: sequence
+  elements:
+    - { rule: join_type, type: non_terminal }
+    - { rule: table_name, type: non_terminal }
+    - { rule: "ON", type: keyword }
+    - { rule: comparison_predicate, type: non_terminal }
+
+join_type: { type: terminal }
+
+# --- Window Functions ---
+window_function:
+  type: sequence
+  elements:
+    - { rule: aggregate_function, type: non_terminal }
+    - { rule: "OVER", type: keyword }
+    - { rule: "(", type: keyword }
+    - { rule: partition_clause, type: optional }
+    - { rule: order_clause, type: optional }
+    - { rule: ")", type: keyword }
+
+partition_clause:
+  type: sequence
+  elements:
+    - { rule: "PARTITION BY", type: keyword }
+    - { rule: column_name, type: non_terminal }
+
+order_clause:
+  type: sequence
+  elements:
+    - { rule: "ORDER BY", type: keyword }
+    - { rule: column_name, type: non_terminal }
+
+# --- YugabyteDB-Specific Data Types and Functions ---
+yugabyte_function: { type: terminal }
+
+# --- Advanced SELECT Features ---
+select_stmt_advanced:
+  type: sequence
+  elements:
+    - { rule: cte_clause, type: optional }
+    - { rule: select_stmt, type: non_terminal }
+    - { rule: union_clause, type: optional }
+
+union_clause:
+  type: sequence
+  elements:
+    - { rule: "UNION", type: keyword }
+    - { rule: select_stmt, type: non_terminal }
+
+# --- YugabyteDB Partitioning ---
+partition_clause_ddl:
+  type: sequence
+  elements:
+    - { rule: "PARTITION BY", type: keyword }
+    - { rule: "RANGE", type: keyword }
+    - { rule: "(", type: keyword }
+    - { rule: column_name, type: keyword }
+    - { rule: ")", type: keyword }

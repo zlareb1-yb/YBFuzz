@@ -132,3 +132,4 @@ Thumbs.db
 executed_queries.sql
 ybfuzz_run.log
 bug_reproductions/
+evolved_corpus/

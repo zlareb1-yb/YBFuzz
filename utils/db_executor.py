@@ -38,6 +38,7 @@ class Catalog:
 
         # Discovered items
         self.tables: dict[str, Table] = {}
+        self.views: dict[str, Table] = {}
         self.functions: list[DiscoveredFunction] = []
         self.types: list[str] = []
 
@@ -48,18 +49,27 @@ class Catalog:
         """Reloads the table and column schema from the database."""
         self.logger.info("Refreshing schema catalog (tables and columns)...")
         self.tables = {}
-        query = "SELECT table_name FROM information_schema.tables WHERE table_schema = %s;"
+        self.views = {}
+        # Query to distinguish between tables and views
+        query = """
+        SELECT table_name, table_type 
+        FROM information_schema.tables 
+        WHERE table_schema = %s;
+        """
         try:
             with self._get_conn().cursor() as cur:
                 cur.execute(query, (self.schema_name,))
-                table_names = [row[0] for row in cur.fetchall()]
-                for table_name in table_names:
-                    self._add_table_to_catalog(table_name)
+                for row in cur.fetchall():
+                    table_name, table_type = row
+                    if table_type == 'BASE TABLE':
+                        self._add_table_to_catalog(table_name, is_view=False)
+                    elif table_type == 'VIEW':
+                        self._add_table_to_catalog(table_name, is_view=True)
         except psycopg2.Error as e:
             self.logger.error(f"Failed to refresh catalog: {e}")
-        self.logger.info(f"Catalog refreshed. Found {len(self.tables)} tables.")
+        self.logger.info(f"Catalog refreshed. Found {len(self.tables)} tables and {len(self.views)} views.")
 
-    def _add_table_to_catalog(self, table_name: str):
+    def _add_table_to_catalog(self, table_name: str, is_view: bool = False):
         table = Table(name=table_name)
         query = "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = %s AND table_name = %s;"
         try:
@@ -68,7 +78,10 @@ class Catalog:
                 for row in cur.fetchall():
                     table.columns.append(Column(name=row[0], data_type=row[1]))
             if table.columns:
-                self.tables[table_name] = table
+                if is_view:
+                    self.views[table_name] = table
+                else:
+                    self.tables[table_name] = table
         except psycopg2.Error as e:
             self.logger.error(f"Failed to add table '{table_name}' to catalog: {e}")
 
@@ -105,8 +118,14 @@ class Catalog:
         self.logger.info(f"Discovered {len(self.functions)} functions and {len(self.types)} base types.")
 
 
-    def get_random_table(self) -> Table | None:
-        return random.choice(list(self.tables.values())) if self.tables else None
+    def get_random_table(self, exclude_views: bool = False) -> Table | None:
+        if exclude_views:
+            # Only return actual tables, not views
+            return random.choice(list(self.tables.values())) if self.tables else None
+        else:
+            # Return either a table or a view
+            all_objects = list(self.tables.values()) + list(self.views.values())
+            return random.choice(all_objects) if all_objects else None
 
     def get_random_column(self, table: Table, of_type: str | None = None) -> Column | None:
         if not table or not table.columns: return None

@@ -9,7 +9,7 @@ import time
 import hashlib
 import os
 import random
-from typing import Union, Optional
+from typing import Union, Optional, Dict
 from .base_oracle import BaseOracle
 from core.generator import SQLNode
 
@@ -136,28 +136,77 @@ class QPGOracle(BaseOracle):
         return row_estimates
 
     def _run_cert_check(self, sql_query: str, plan_text: str):
-        """Cardinality Estimation Restriction Testing (CERT)."""
-        row_estimates = self._parse_plan_for_rows(plan_text)
-        threshold = self.oracle_config.get('cert_threshold', 100)
-
-        for estimated, actual in row_estimates:
-            if actual > 0 and estimated > 0 and ((estimated / actual > threshold) or (actual / estimated > threshold)):
-                # Capture catalog snapshot for bug reproduction
-                catalog_snapshot = self.executor._capture_catalog_snapshot() if hasattr(self.executor, '_capture_catalog_snapshot') else {}
-                
-                self.reporter.report_bug(
-                    oracle_name=self.name,
-                    bug_type="CERT - Cardinality Misestimation",
-                    description=f"Optimizer misestimated row count by more than {threshold}x.",
-                    original_query=sql_query,
-                    context={
-                        "estimated_rows": estimated,
-                        "actual_rows": actual,
-                        "full_plan": plan_text
-                    },
-                    catalog_snapshot=catalog_snapshot
-                )
-                break
+        """Cardinality Estimation Robustness Testing (CERT) for real performance bugs."""
+        try:
+            # Try to force different execution plans using hints
+            alternative_plans = self._try_alternative_plans(sql_query)
+            if not alternative_plans:
+                return
+            
+            # Compare execution times
+            default_time = self._measure_execution_time(sql_query)
+            if default_time is None:
+                return
+            
+            # Check if any alternative plan is significantly faster
+            for plan_name, plan_query in alternative_plans.items():
+                alt_time = self._measure_execution_time(plan_query)
+                if alt_time and alt_time < default_time * 0.5:  # 50% faster
+                    # This is a real performance bug!
+                    catalog_snapshot = self.executor._capture_catalog_snapshot() if hasattr(self.executor, '_capture_catalog_snapshot') else {}
+                    
+                    self.reporter.report_bug(
+                        oracle_name=self.name,
+                        bug_type="CERT - Performance Bug",
+                        description=f"Alternative plan '{plan_name}' is {default_time/alt_time:.1f}x faster than default plan.",
+                        original_query=sql_query,
+                        context={
+                            "default_plan": plan_text,
+                            "default_time": default_time,
+                            "alternative_plan": plan_name,
+                            "alternative_time": alt_time,
+                            "speedup": default_time/alt_time
+                        },
+                        catalog_snapshot=catalog_snapshot
+                    )
+                    break
+        except Exception as e:
+            self.logger.warning(f"CERT check failed: {e}")
+    
+    def _try_alternative_plans(self, sql_query: str) -> Dict[str, str]:
+        """Tries to generate alternative execution plans using hints."""
+        alternatives = {}
+        
+        # Force different join methods
+        if 'JOIN' in sql_query.upper():
+            alternatives['Nested Loop'] = sql_query.replace('SELECT', 'SELECT /*+ NestLoop */', 1)
+            alternatives['Hash Join'] = sql_query.replace('SELECT', 'SELECT /*+ HashJoin */', 1)
+            alternatives['Merge Join'] = sql_query.replace('SELECT', 'SELECT /*+ MergeJoin */', 1)
+        
+        # Force different scan methods
+        if 'WHERE' in sql_query.upper():
+            alternatives['Index Scan'] = sql_query.replace('SELECT', 'SELECT /*+ IndexScan */', 1)
+            alternatives['Seq Scan'] = sql_query.replace('SELECT', 'SELECT /*+ SeqScan */', 1)
+        
+        # Force different sort methods
+        if 'ORDER BY' in sql_query.upper():
+            alternatives['External Sort'] = sql_query.replace('SELECT', 'SELECT /*+ SetWorkMem(1MB) */', 1)
+        
+        return alternatives
+    
+    def _measure_execution_time(self, sql_query: str) -> Optional[float]:
+        """Measures execution time of a query."""
+        try:
+            start_time = time.time()
+            result, exception = self.executor.execute_query(sql_query)
+            end_time = time.time()
+            
+            if exception:
+                return None
+            
+            return end_time - start_time
+        except Exception:
+            return None
 
     def _run_dqp_check(self, sql_query: str):
         """Differential Query Plans (DQP) by creating a temporary index."""
@@ -173,14 +222,14 @@ class QPGOracle(BaseOracle):
 
         original_plan_res, _ = self.executor.execute_query(f"EXPLAIN {sql_query}")
         if not original_plan_res: return
-        original_plan = "\n".join(row[0] for row in original_plan_res)
+        original_plan = "\n".join(str(row[0]) for row in original_plan_res)
 
         setup_sqls = [f"CREATE INDEX {index_name} ON {table_name_with_schema} (\"{column_to_index}\");"]
         teardown_sqls = [f"DROP INDEX IF EXISTS {index_name};"]
         new_plan_res, exc = self.executor.execute_query_with_setup(setup_sqls, f"EXPLAIN {sql_query}", teardown_sqls)
         if exc or not new_plan_res: return
         
-        new_plan = "\n".join(row[0] for row in new_plan_res)
+        new_plan = "\n".join(str(row[0]) for row in new_plan_res)
 
         if "Index Scan" not in new_plan and "Seq Scan" in original_plan:
             # Capture catalog snapshot for bug reproduction
@@ -222,8 +271,8 @@ class QPGOracle(BaseOracle):
         variant_plan_res, _ = self.executor.execute_query(f"EXPLAIN {variant_query}")
         if not original_plan_res or not variant_plan_res: return
 
-        original_plan = "\n".join(row[0] for row in original_plan_res)
-        variant_plan = "\n".join(row[0] for row in variant_plan_res)
+        original_plan = "\n".join(str(row[0]) for row in original_plan_res)
+        variant_plan = "\n".join(str(row[0]) for row in variant_plan_res)
 
         # Apply smart filtering if enabled
         if self.enable_smart_filtering:
