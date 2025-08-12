@@ -1,150 +1,250 @@
-# ==========================================================
-# YBFuzz Framework Configuration
-# ==========================================================
+# YBFuzz Configuration File
+# World-class Staff SDET database fuzzer configuration
 
-# --- Run Control ---
-duration: 300                  # Fuzzing duration in seconds
-max_sessions: 500              # Maximum number of sessions to generate
-random_seed: null              # Set to an integer for reproducible runs, or null for random
-log_level: INFO                # DEBUG, INFO, WARNING, ERROR
-log_file: "ybfuzz_run.log"       # Main log file
-bug_report_file: "bugs.log"    # File for detailed, structured bug reports
-sql_log_file: "executed_queries.sql" # A clean script for easy reproduction
-catalog_refresh_interval: 5    # How often (in sessions) to refresh the DB schema
-
-# --- Database Connection ---
+# Database Configuration
 database:
   host: "10.9.86.186,10.9.139.177,10.9.205.248"
   port: 5433
   user: "yugabyte"
   password: "Password#123"
-  dbname: "yugabyte"
+  database: "yugabyte"
   schema_name: "ybfuzz_schema"
+  connection_timeout: 30
+  max_connections: 10
 
-# --- Sanitizer Configuration ---
-# Configure this section when running against a sanitizer-enabled build of YugabyteDB.
-sanitizer:
-  # The type of sanitizer being used. E.g., "ASan", "TSan", "UBSan".
-  # This will be included in bug reports for better classification.
-  type: "ASan"
-  # The absolute path to the database log file where sanitizer output can be found.
-  # The bug reporter will scan this file when a crash is detected.
-  log_file_path: "/path/to/yugabytedb/logs/tserver.INFO" # IMPORTANT: Update this path
-
-# --- Initial Database State ---
-# SQL commands to run at the start of each fuzzing session.
-# Use '$$schema$$' as a placeholder for the schema_name above.
-initial_db_setup_sqls:
-  - "CREATE TABLE $$schema$$.products (id INT PRIMARY KEY, name TEXT, category TEXT, price NUMERIC, stock_count INT);"
-  - "INSERT INTO $$schema$$.products SELECT g, 'Product-' || g, 'Category-' || (g%10), g*1.5, g*10 FROM generate_series(1,100) g;"
-  - "CREATE TABLE $$schema$$.orders (id SERIAL PRIMARY KEY, order_id INTEGER, product_id INTEGER, quantity INTEGER, price NUMERIC(10,2), order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP);"
-  - "INSERT INTO $$schema$$.orders (order_id, product_id, quantity, price) SELECT g, (g % 50) + 1, (g % 10) + 1, (g % 100) + 10.0 FROM generate_series(1,50) g;"
-  - "CREATE TABLE $$schema$$.customers (id SERIAL PRIMARY KEY, name TEXT, email TEXT, phone TEXT, address TEXT, created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP);"
-  - "INSERT INTO $$schema$$.customers (name, email, phone, address) SELECT 'Customer-' || g, 'customer' || g || '@example.com', '+1-555-' || LPAD(g::text, 4, '0'), 'Address ' || g || ', City, State' FROM generate_series(1,25) g;"
-  - "CREATE TABLE $$schema$$.categories (id SERIAL PRIMARY KEY, name TEXT, description TEXT, parent_id INTEGER);"
-  - "INSERT INTO $$schema$$.categories (name, description, parent_id) SELECT 'Category-' || g, 'Description for category ' || g, CASE WHEN g % 3 = 0 THEN NULL ELSE (g % 5) + 1 END FROM generate_series(1,10) g;"
-
-# --- Fuzzer Engine Strategy ---
-engine_strategy:
-  # Probability (0.0 to 1.0) of using the mutational engine.
-  mutation_probability: 0.7
-
-# --- Corpus Configuration ---
-corpus:
-  seed_file: "corpus/seed_queries.txt"
-
-# --- Corpus Evolution Strategy ---
-# Allows the fuzzer to learn and save "interesting" queries.
-corpus_evolution:
-  enabled: true
-  directory: "evolved_corpus" # Discovered queries will be saved here
-
-# --- Test Case Reducer Configuration ---
-reducer:
-  enabled: false
-
-# All bugs are reported to bug_reproductions directory only
-
-# --- Grammar File for Generative Engine ---
-grammar_file: "core/grammar.yaml"
-
-# --- Grammar and Generator Control ---
-max_recursion_depth:
-  expression: 5
-
-# Weights for choosing which statement to generate within a phase
-statement_weights:
-  ddl_statement:
-    create_table_stmt: 50
-    create_view_stmt: 30
-    create_index_stmt: 20
-  dml_statement:
-    insert_stmt: 50
-    update_stmt: 40
-    delete_stmt: 10
-  select_stmt: 100
-
-# When a rule is a "choice" (A | B | C), these weights guide the selection.
-rule_choice_weights:
-  select_list_item:
-    column_name: 0.5
-    aggregate_function: 0.4
-    scalar_function: 0.1
-
-# Probabilities (0.0 to 1.0) for expanding optional or repeatable grammar rules.
-rule_expansion_probabilities:
-  select_stmt:
-    WHERE: 0.9
-    GROUP_BY: 0.7
-    LIMIT: 0.4
-  boolean_term:
-    AND: 0.5
-
-# --- Stateful Session Strategy ---
-session_strategy:
-  ddl_statements: [1, 2]
-  dml_statements: [3, 8]
-  final_select_statements: 1
-
-# --- Mutator Strategy Control ---
-mutator_strategies:
-  mutate_literal:
-    enabled: true
-    weight: 1.0
-  mutate_comparison_operator:
-    enabled: true
-    weight: 0.8
-  mutate_function_name:
-    enabled: true
-    weight: 0.5
-
-# --- Bug Reporting Configuration ---
-bug_reporting:
-  enabled: true
-  bugs_file: "bugs.log"
-  reproduction_dir: "bug_reproductions"
-  sanitizer_check: true
-  sanitizer_type: "ASan"  # ASan, UBSan, TSan, MSan
-
-# --- Oracle Configuration ---
-oracles:
-  TLOracle:
-    enabled: true
-    enable_norec: true
-    enable_tlp: true
-    norec_settings:
-      - "enable_nestloop"
-      - "enable_hashjoin"
+# Fuzzing Configuration
+fuzzing:
+  duration: 300  # 5 minutes default
+  max_sessions: 100
+  queries_per_session: 10
+  mutation_rate: 0.3
+  seed_corpus_size: 100
+  evolved_corpus_size: 50
   
-  QPGOracle:
+  # Advanced fuzzing strategies
+  strategies:
+    grammar_based: true
+    mutation_based: true
+    corpus_based: true
+    feedback_driven: true
+    adaptive_mutation: true
+
+# Oracle Configuration - Advanced Bug Detection
+oracles:
+  # Core Oracles (Always Enabled)
+  tlp:
     enabled: true
-    enable_cert: true
-    enable_dqp: true
-    enable_coddtest: true
-    cert_threshold: 100 # Report bug if estimate is off by 100x
+    max_partitions: 3
+    enable_advanced_partitioning: true
     
-    # Smart filtering to reduce false positives
-    enable_smart_filtering: true
-    filter_type_casting: true      # Filter out type casting changes
-    filter_storage_filters: true   # Filter out storage filter changes
-    min_significant_changes: 3    # Minimum structural changes to report as bug
+  qpg:
+    enabled: true
+    plan_observation_threshold: 10
+    mutation_strategies: ["table_state", "index_state", "data_state"]
+    
+  # Advanced Oracles (Configurable)
+  pqs:
+    enabled: false  # Enable for Pivoted Query Synthesis
+    max_pivot_attempts: 10
+    min_pivot_rows: 5
+    enable_cross_table_pivoting: true
+    
+  norec:
+    enabled: false  # Enable for Non-optimizing Reference Engine Construction
+    enable_hints: true
+    max_rewrite_attempts: 5
+    optimization_strategies: ["hint_based", "rewrite_based", "redundant_conditions"]
+    
+  cert:
+    enabled: false  # Enable for Cardinality Estimation Restriction Testing
+    enable_explain: true
+    max_restriction_attempts: 3
+    cardinality_threshold: 0.1
+    performance_analysis: true
+    
+  dqp:
+    enabled: false  # Enable for Differential Query Plans
+    enable_plan_control: true
+    max_plan_variations: 3
+    plan_hints: ["index_hints", "join_hints", "optimization_hints"]
+    
+  coddtest:
+    enabled: false  # Enable for Constant Optimization Driven Testing
+    enable_constant_folding: true
+    enable_constant_propagation: true
+    max_substitution_attempts: 5
+    optimization_levels: ["basic", "intermediate", "advanced"]
+
+# Query Generation Configuration
+generation:
+  # Grammar-based generation
+  grammar_file: "core/grammar.yaml"
+  max_recursion_depth: 5
+  max_query_length: 1000
+  
+  # Advanced generation strategies
+  strategies:
+    context_aware: true
+    schema_aware: true
+    type_aware: true
+    constraint_aware: true
+    
+  # Query complexity control
+  complexity:
+    max_joins: 3
+    max_subqueries: 2
+    max_aggregations: 2
+    max_window_functions: 1
+
+# Mutation Configuration
+mutation:
+  # Mutation strategies
+  strategies:
+    - "column_substitution"
+    - "operator_mutation"
+    - "clause_reordering"
+    - "type_conversion"
+    - "null_handling"
+    - "edge_case_injection"
+    
+  # Mutation parameters
+  parameters:
+    mutation_rate: 0.3
+    max_mutations_per_query: 3
+    preserve_semantics: true
+    
+  # Advanced mutation techniques
+  advanced:
+    semantic_preservation: true
+    constraint_aware_mutation: true
+    feedback_driven_mutation: true
+
+# Bug Reporting Configuration
+bug_reporting:
+  # Report organization
+  organize_by:
+    - "bug_type"
+    - "oracle"
+    - "severity"
+    - "category"
+    
+  # Report formats
+  formats:
+    - "json"
+    - "sql"
+    - "markdown"
+    - "html"
+    
+  # Report content
+  content:
+    include_reproduction: true
+    include_context: true
+    include_statistics: true
+    include_metadata: true
+    
+  # Advanced reporting
+  advanced:
+    bug_clustering: true
+    duplicate_detection: true
+    severity_classification: true
+    impact_analysis: true
+
+# Performance Configuration
+performance:
+  # Query execution
+  execution:
+    timeout: 30
+    max_memory: "1GB"
+    parallel_execution: true
+    connection_pooling: true
+    
+  # Optimization
+  optimization:
+    query_planning: true
+    result_caching: true
+    adaptive_execution: true
+    
+  # Monitoring
+  monitoring:
+    performance_metrics: true
+    resource_usage: true
+    bottleneck_detection: true
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(levelname)s - [%(name)s] - %(message)s"
+  
+  # Log destinations
+  destinations:
+    - "console"
+    - "file"
+    - "syslog"
+    
+  # Advanced logging
+  advanced:
+    structured_logging: true
+    log_rotation: true
+    log_compression: true
+    performance_logging: true
+
+# Security Configuration
+security:
+  # Input validation
+  validation:
+    sql_injection_protection: true
+    query_sanitization: true
+    parameter_validation: true
+    
+  # Access control
+  access_control:
+    user_privileges: true
+    schema_isolation: true
+    query_restrictions: true
+
+# Testing Configuration
+testing:
+  # Test modes
+  modes:
+    smoke_test: false
+    regression_test: false
+    performance_test: false
+    stress_test: false
+    
+  # Test coverage
+  coverage:
+    statement_coverage: true
+    branch_coverage: true
+    oracle_coverage: true
+    
+  # Test validation
+  validation:
+    result_verification: true
+    performance_baseline: true
+    regression_detection: true
+
+# Advanced Features
+advanced:
+  # Machine Learning Integration
+  ml_integration:
+    enabled: false
+    model_path: "models/"
+    training_data: "data/training/"
+    
+  # AI-Powered Generation
+  ai_generation:
+    enabled: false
+    model_type: "transformer"
+    context_window: 1024
+    
+  # Distributed Fuzzing
+  distributed:
+    enabled: false
+    worker_nodes: 4
+    coordination: "redis"
+    
+  # Real-time Analysis
+  real_time:
+    enabled: false
+    streaming: true
+    alerting: true

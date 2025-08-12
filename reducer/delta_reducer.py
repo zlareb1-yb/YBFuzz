@@ -29,16 +29,18 @@ class DeltaReducer:
         original_level = self.db_executor.logger.level
         self.db_executor.logger.setLevel(logging.ERROR)
         
-        _ , exception = self.db_executor.execute_query(sql_query)
+        # Execute the query
+        try:
+            result = self.db_executor.execute_query(sql_query)
+            if result is None:
+                return False
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to execute query: {e}")
+            return False
         
         # Restore the original log level
         self.db_executor.logger.setLevel(original_level)
-
-        if not exception:
-            return False
-        
-        current_signature = self.bug_reporter._get_bug_signature("REDUCER_CHECK", exception)
-        return current_signature == original_bug_signature
 
     def reduce(self, original_query: str, bug_signature: str) -> str:
         """

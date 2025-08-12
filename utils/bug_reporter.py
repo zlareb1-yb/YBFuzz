@@ -3,245 +3,273 @@ import logging
 import os
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional
-from config import FuzzerConfig
+from typing import Dict, Any, Optional
 
 class BugReporter:
     """
-    Enhanced bug reporter that provides comprehensive bug information
-    including exact reproduction datasets and step-by-step instructions.
+    Enhanced bug reporter that organizes bugs by type and filters out false positives.
     """
     
-    def __init__(self, config: FuzzerConfig):
+    def __init__(self, config):
         self.config = config
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.bugs_file = config.get('bug_reporting', {}).get('bugs_file', 'bugs.log')
-        self.reproduction_dir = config.get('bug_reporting', {}).get('reproduction_dir', 'bug_reproductions')
         
-        # Create reproduction directory
-        os.makedirs(self.reproduction_dir, exist_ok=True)
+        # Bug reporting configuration
+        bug_config = config.get('bug_reporting', {})
+        self.bugs_file = bug_config.get('bugs_file', 'bugs.log')
+        self.base_reproduction_dir = bug_config.get('reproduction_dir', 'bug_reproductions')
         
-        # Track bugs for summary
-        self.bug_count = 0
-        self.bug_types = {}
-        
-    def report_bug(self, oracle_name: str, bug_type: str, description: str, 
-                   original_query: str = None, exception: Exception = None,
-                   context: Dict[str, Any] = None, query_history: List[str] = None,
-                   catalog_snapshot: Dict[str, Any] = None):
-        """
-        Reports a bug with comprehensive information for reproduction.
-        """
-        self.bug_count += 1
-        bug_id = f"BUG_{self.bug_count:04d}_{int(time.time())}"
-        
-        # Update bug type statistics
-        if bug_type not in self.bug_types:
-            self.bug_types[bug_type] = 0
-        self.bug_types[bug_type] += 1
-        
-        # Create comprehensive bug report
-        bug_report = {
-            "bug_id": bug_id,
-            "timestamp": datetime.now().isoformat(),
-            "oracle": oracle_name,
-            "bug_type": bug_type,
-            "description": description,
-            "severity": self._assess_severity(bug_type, exception),
-            "reproduction": {
-                "original_query": original_query,
-                "exception": str(exception) if exception else None,
-                "context": context or {},
-                "query_history": query_history or [],
-                "catalog_snapshot": catalog_snapshot or {}
-            },
-                            "environment": {
-                    "database": self.config.get_db_config().get('dbname', 'unknown'),
-                    "schema": self.config.get_db_config().get('schema_name', 'unknown'),
-                    "config_file": 'config.yaml'
-                }
+        # Create organized directory structure
+        self.dirs = {
+            'fuzzer_bugs': os.path.join(self.base_reproduction_dir, 'fuzzer_bugs'),
+            'yugabytedb_bugs': os.path.join(self.base_reproduction_dir, 'yugabytedb_bugs'),
+            'performance_bugs': os.path.join(self.base_reproduction_dir, 'performance_bugs'),
+            'syntax_bugs': os.path.join(self.base_reproduction_dir, 'syntax_bugs')
         }
         
-        # Log to bugs.log
-        self._log_bug(bug_report)
+        for dir_path in self.dirs.values():
+            os.makedirs(dir_path, exist_ok=True)
         
-        # Create detailed reproduction file
-        self._create_reproduction_file(bug_id, bug_report)
+        # Bug counters
+        self.bug_counters = {
+            'fuzzer_bugs': 0,
+            'yugabytedb_bugs': 0,
+            'performance_bugs': 0,
+            'syntax_bugs': 0
+        }
         
-        # Log summary
-        self.logger.error(f"!!! NEW BUG FOUND by {oracle_name}! Type: {bug_type}. See bugs.log for details. !!!")
+        # False positive patterns to filter out
+        self.false_positive_patterns = [
+            # Function signature mismatches (expected when fuzzing)
+            r"function.*does not exist",
+            r"No function matches the given name and argument types",
+            r"operator does not exist",
+            r"No operator matches the given name and argument types",
+            
+            # Type casting issues (expected when fuzzing)
+            r"column.*is of type.*but expression is of type",
+            r"cannot cast type.*to type",
+            r"invalid input syntax for type",
+            
+            # Minor syntax issues (not critical bugs)
+            r"syntax error at or near",
+            r"unexpected token",
+            
+            # Constraint violations (expected when fuzzing)
+            r"null value in column.*violates not-null constraint",
+            r"duplicate key value violates unique constraint",
+            
+            # View limitations (expected behavior)
+            r"cannot insert into view",
+            r"cannot update view",
+            r"cannot delete from view",
+            
+            # Column existence (expected when fuzzing)
+            r"column.*does not exist",
+            
+            # Aggregate function issues (expected when fuzzing)
+            r"count\(\*\) must be used to call a parameterless aggregate function",
+            r"aggregate function calls cannot contain nested aggregate or window function calls"
+        ]
         
-        return bug_id
+        self.logger.info(f"BugReporter initialized with organized directories: {list(self.dirs.keys())}")
     
-    def _assess_severity(self, bug_type: str, exception: Exception) -> str:
-        """Assesses bug severity based on type and exception."""
-        if "Critical Database Error" in bug_type:
-            return "HIGH"
-        elif "Cardinality Misestimation" in bug_type:
-            return "MEDIUM"
-        elif "Plan Instability" in bug_type:
-            return "LOW"
-        else:
-            return "UNKNOWN"
+    def _categorize_bug(self, bug_type: str, description: str, exception: Optional[str] = None) -> str:
+        """
+        Categorize bugs based on type and description to determine the appropriate directory.
+        """
+        # Performance bugs (optimizer issues)
+        if any(keyword in bug_type.lower() for keyword in ['performance', 'optimizer', 'plan', 'execution']):
+            return 'performance_bugs'
+        
+        # Syntax bugs (SQL generation issues)
+        if any(keyword in bug_type.lower() for keyword in ['syntax', 'parsing', 'grammar']):
+            return 'syntax_bugs'
+        
+        # Fuzzer bugs (our own generation issues)
+        if any(keyword in description.lower() for keyword in ['fuzzer', 'generation', 'invalid sql']):
+            return 'fuzzer_bugs'
+        
+        # Check if it's a false positive
+        if self._is_false_positive(description, exception):
+            return 'fuzzer_bugs'  # Treat false positives as fuzzer bugs
+        
+        # Default to YugabyteDB bugs (real database issues)
+        return 'yugabytedb_bugs'
+    
+    def _is_false_positive(self, description: str, exception: Optional[str] = None) -> bool:
+        """
+        Check if a bug report is a false positive that should be filtered out.
+        """
+        import re
+        
+        text_to_check = f"{description} {exception or ''}".lower()
+        
+        for pattern in self.false_positive_patterns:
+            if re.search(pattern, text_to_check, re.IGNORECASE):
+                return True
+        
+        return False
+    
+    def report_bug(self, bug_type: str, description: str, query: str, error: str = None, 
+                   reproduction_query: str = None, **kwargs):
+        """
+        Report a bug with comprehensive information.
+        
+        Args:
+            bug_type: Type of bug (e.g., 'syntax', 'logical', 'performance')
+            description: Human-readable description of the bug
+            query: The query that caused the bug
+            error: Error message from the database
+            reproduction_query: SQL script to reproduce the bug
+            **kwargs: Additional bug-specific information
+        """
+        try:
+            # Create bug report
+            bug_report = {
+                'timestamp': datetime.now().isoformat(),
+                'bug_type': bug_type,
+                'description': description,
+                'query': query,
+                'error': error,
+                'reproduction_query': reproduction_query,
+                'additional_info': kwargs
+            }
+            
+            # Determine the appropriate directory for this bug type
+            if bug_type in ['syntax', 'sql_syntax']:
+                target_dir = self.dirs['syntax_bugs']
+            elif bug_type in ['logical', 'tlp', 'qpg', 'norec', 'pqs']:
+                target_dir = self.dirs['yugabytedb_bugs']
+            elif bug_type in ['performance', 'query_plan']:
+                target_dir = self.dirs['performance_bugs']
+            else:
+                target_dir = self.dirs['fuzzer_bugs']
+            
+            # Generate unique filename
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+            filename = f"bug_{bug_type}_{timestamp}.json"
+            filepath = os.path.join(target_dir, filename)
+            
+            # Write bug report to file
+            with open(filepath, 'w') as f:
+                json.dump(bug_report, f, indent=2)
+            
+            # Also write to the main bug log
+            self._log_bug(bug_report)
+            
+            self.logger.info(f"Bug reported: {bug_type} bug saved to {filepath}")
+            return filepath
+            
+        except Exception as e:
+            self.logger.error(f"Failed to report bug: {e}")
+            return None
     
     def _log_bug(self, bug_report: Dict[str, Any]):
-        """Logs bug to the main bugs.log file."""
+        """Log bug to the bugs.log file."""
         try:
             with open(self.bugs_file, 'a') as f:
-                f.write(json.dumps(bug_report) + '\n')
+                f.write(json.dumps(bug_report, indent=2) + '\n\n')
         except Exception as e:
-            self.logger.error(f"Failed to write to bugs.log: {e}")
+            self.logger.error(f"Failed to log bug: {e}")
     
-    def _create_reproduction_file(self, bug_id: str, bug_report: Dict[str, Any]):
-        """Creates a detailed reproduction file for the bug."""
+    def _create_reproduction_file(self, bug_report: Dict[str, Any]):
+        """Create a detailed reproduction file in the appropriate directory."""
         try:
-            repro_file = os.path.join(self.reproduction_dir, f"{bug_id}_reproduction.sql")
+            category = bug_report['category']
+            dir_path = self.dirs[category]
+            filename = f"{bug_report['bug_id']}_reproduction.sql"
+            filepath = os.path.join(dir_path, filename)
             
-            with open(repro_file, 'w') as f:
-                f.write(f"-- Bug Reproduction Script: {bug_id}\n")
-                f.write(f"-- Type: {bug_report['bug_type']}\n")
-                f.write(f"-- Severity: {bug_report['severity']}\n")
+            with open(filepath, 'w') as f:
+                f.write(f"-- Bug Reproduction Script: {bug_report['bug_id']}\n")
+                f.write(f"-- Category: {category}\n")
+                f.write(f"-- Bug Type: {bug_report['bug_type']}\n")
                 f.write(f"-- Description: {bug_report['description']}\n")
-                f.write(f"-- Timestamp: {bug_report['timestamp']}\n")
-                f.write(f"-- Oracle: {bug_report['oracle']}\n\n")
+                f.write(f"-- Oracle: {bug_report['oracle']}\n")
+                f.write(f"-- Timestamp: {bug_report['datetime']}\n\n")
                 
                 # Environment setup
                 f.write("-- =========================================\n")
-                f.write("-- ENVIRONMENT SETUP\n")
+                f.write("-- Environment Setup\n")
                 f.write("-- =========================================\n")
                 f.write(f"-- Database: {bug_report['environment']['database']}\n")
-                f.write(f"-- Schema: {bug_report['environment']['schema']}\n")
-                f.write(f"-- Config: {bug_report['environment']['config_file']}\n\n")
+                f.write(f"-- Schema: {bug_report['environment']['schema']}\n\n")
                 
-                # Schema recreation
-                f.write("-- =========================================\n")
-                f.write("-- SCHEMA RECREATION\n")
-                f.write("-- =========================================\n")
-                f.write("-- Drop and recreate schema\n")
-                f.write(f"DROP SCHEMA IF EXISTS {bug_report['environment']['schema']} CASCADE;\n")
-                f.write(f"CREATE SCHEMA {bug_report['environment']['schema']};\n\n")
-                
-                # Table creation (if catalog snapshot available)
-                if bug_report['reproduction']['catalog_snapshot']:
+                # Schema recreation from catalog snapshot
+                if bug_report['catalog_snapshot']:
                     f.write("-- =========================================\n")
-                    f.write("-- TABLE CREATION\n")
+                    f.write("-- Schema Recreation\n")
                     f.write("-- =========================================\n")
-                    tables = bug_report['reproduction']['catalog_snapshot'].get('tables', {})
-                    for table_name, table_info in tables.items():
+                    for table_name, table_info in bug_report['catalog_snapshot'].get('tables', {}).items():
                         f.write(f"-- Table: {table_name}\n")
-                        f.write(f"CREATE TABLE {bug_report['environment']['schema']}.{table_name} (\n")
-                        columns = table_info.get('columns', [])
-                        for i, col in enumerate(columns):
-                            comma = "," if i < len(columns) - 1 else ""
-                            f.write(f"    {col['name']} {col['type']}{comma}\n")
-                        f.write(");\n\n")
+                        if 'columns' in table_info:
+                            for col_name, col_type in table_info['columns'].items():
+                                f.write(f"--   {col_name}: {col_type}\n")
+                        f.write("\n")
                 
-                # Data insertion (if available)
-                if bug_report['reproduction']['context'].get('sample_data'):
+                # Query history
+                if bug_report['query_history']:
                     f.write("-- =========================================\n")
-                    f.write("-- SAMPLE DATA INSERTION\n")
+                    f.write("-- Query History (Context)\n")
                     f.write("-- =========================================\n")
-                    f.write(bug_report['reproduction']['context']['sample_data'])
-                    f.write("\n\n")
-                
-                # Query history for context
-                if bug_report['reproduction']['query_history']:
-                    f.write("-- =========================================\n")
-                    f.write("-- QUERY CONTEXT (executed before the bug)\n")
-                    f.write("-- =========================================\n")
-                    for i, query in enumerate(bug_report['reproduction']['query_history']):
+                    for i, query in enumerate(bug_report['query_history']):
                         f.write(f"-- Query {i+1}:\n")
                         f.write(f"{query};\n\n")
                 
                 # The buggy query
                 f.write("-- =========================================\n")
-                f.write("-- THE BUGGY QUERY\n")
+                f.write("-- Bug Reproduction Query\n")
                 f.write("-- =========================================\n")
-                f.write(f"-- This query triggers the bug: {bug_report['bug_type']}\n")
-                if bug_report['reproduction']['original_query']:
-                    f.write(f"{bug_report['reproduction']['original_query']};\n\n")
-                
-                # Exception details
-                if bug_report['reproduction']['exception']:
-                    f.write("-- =========================================\n")
-                    f.write("-- EXPECTED ERROR\n")
-                    f.write("-- =========================================\n")
-                    f.write(f"-- Error: {bug_report['reproduction']['exception']}\n\n")
+                f.write(f"-- Expected: {bug_report['description']}\n")
+                f.write(f"-- Actual: {bug_report['exception'] or 'Unexpected behavior'}\n\n")
+                f.write(f"{bug_report['original_query']};\n\n")
                 
                 # Additional context
-                if bug_report['reproduction']['context']:
+                if bug_report['context']:
                     f.write("-- =========================================\n")
-                    f.write("-- ADDITIONAL CONTEXT\n")
+                    f.write("-- Additional Context\n")
                     f.write("-- =========================================\n")
-                    for key, value in bug_report['reproduction']['context'].items():
-                        if key not in ['sample_data']:  # Already handled above
-                            f.write(f"-- {key}: {value}\n")
+                    for key, value in bug_report['context'].items():
+                        f.write(f"-- {key}: {value}\n")
                 
-                # Reproduction steps
-                f.write("\n-- =========================================\n")
-                f.write("-- REPRODUCTION STEPS\n")
-                f.write("-- =========================================\n")
-                f.write("-- 1. Run the schema recreation commands above\n")
-                f.write("-- 2. Execute the query context (if any)\n")
-                f.write("-- 3. Run the buggy query\n")
-                f.write("-- 4. Observe the error/issue\n")
-                f.write("-- 5. Verify the bug behavior matches the description\n\n")
-                
-                # Analysis notes
-                f.write("-- =========================================\n")
-                f.write("-- ANALYSIS NOTES\n")
-                f.write("-- =========================================\n")
-                f.write(f"-- Bug ID: {bug_id}\n")
-                f.write(f"-- Severity: {bug_report['severity']}\n")
-                f.write(f"-- Oracle: {bug_report['oracle']}\n")
-                f.write(f"-- Timestamp: {bug_report['timestamp']}\n")
-                
-            self.logger.info(f"Created detailed reproduction file: {repro_file}")
+                f.write("\n-- End of reproduction script\n")
+            
+            self.logger.info(f"Created reproduction file: {filepath}")
             
         except Exception as e:
             self.logger.error(f"Failed to create reproduction file: {e}")
     
     def get_bug_summary(self) -> Dict[str, Any]:
-        """Returns a summary of all reported bugs."""
+        """Get a summary of all reported bugs."""
         return {
-            "total_bugs": self.bug_count,
-            "bug_types": self.bug_types,
-            "bugs_file": self.bugs_file,
-            "reproduction_dir": self.reproduction_dir
+            "total_bugs": sum(self.bug_counters.values()),
+            "by_category": self.bug_counters.copy(),
+            "directories": {k: v for k, v in self.dirs.items()}
         }
     
-    def create_bug_report_summary(self):
-        """Creates a human-readable summary of all bugs found."""
-        try:
-            summary_file = os.path.join(self.reproduction_dir, "BUG_SUMMARY.md")
-            
-            with open(summary_file, 'w') as f:
-                f.write("# YBFuzz Bug Report Summary\n\n")
-                f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-                
-                f.write(f"## Overview\n")
-                f.write(f"- **Total Bugs Found**: {self.bug_count}\n")
-                f.write(f"- **Bug Types**: {len(self.bug_types)}\n")
-                f.write(f"- **Reproduction Files**: {self.reproduction_dir}/\n\n")
-                
-                if self.bug_types:
-                    f.write("## Bug Type Breakdown\n")
-                    for bug_type, count in self.bug_types.items():
-                        f.write(f"- **{bug_type}**: {count} bugs\n")
-                    f.write("\n")
-                
-                f.write("## Files\n")
-                f.write(f"- **Main Bug Log**: `{self.bugs_file}`\n")
-                f.write(f"- **Reproduction Scripts**: `{self.reproduction_dir}/`\n")
-                f.write(f"- **Configuration**: `{self.config.config_file}`\n\n")
-                
-                f.write("## Next Steps\n")
-                f.write("1. Review each bug reproduction file\n")
-                f.write("2. Verify bugs in a clean environment\n")
-                f.write("3. Report confirmed bugs to the database team\n")
-                f.write("4. Track bug fixes and regressions\n")
-                
-            self.logger.info(f"Created bug summary: {summary_file}")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to create bug summary: {e}")
+    def create_bug_report_summary(self) -> str:
+        """Create a human-readable summary of all bugs."""
+        summary = self.get_bug_summary()
+        
+        report = "# YBFuzz Bug Report Summary\n\n"
+        report += f"**Total Bugs Found:** {summary['total_bugs']}\n\n"
+        
+        report += "## Bugs by Category\n"
+        for category, count in summary['by_category'].items():
+            report += f"- **{category.replace('_', ' ').title()}:** {count}\n"
+        
+        report += "\n## Directory Structure\n"
+        for category, dir_path in summary['directories'].items():
+            report += f"- **{category.replace('_', ' ').title()}:** `{dir_path}`\n"
+        
+        if summary['total_bugs'] == 0:
+            report += "\n🎉 **No bugs found!** The fuzzer is working correctly.\n"
+        else:
+            report += f"\n📊 **Bug Distribution:**\n"
+            for category, count in summary['by_category'].items():
+                if count > 0:
+                    percentage = (count / summary['total_bugs']) * 100
+                    report += f"- {category.replace('_', ' ').title()}: {count} ({percentage:.1f}%)\n"
+        
+        return report

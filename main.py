@@ -75,7 +75,11 @@ def main():
     # Main execution block
     try:
         engine = FuzzerEngine(config)
-        engine.run()
+        # Pass duration from command line if specified
+        duration = config.get('fuzzing', {}).get('duration')
+        if args.duration:
+            duration = args.duration
+        engine.run(duration)
     except KeyboardInterrupt:
         logging.info("\nFuzzing run interrupted by user.")
     except Exception as e:

@@ -9,378 +9,374 @@ import time
 import hashlib
 import os
 import random
-from typing import Union, Optional, Dict
+from typing import Union, Optional, Dict, List, Tuple, Any
 from .base_oracle import BaseOracle
 from core.generator import SQLNode
+from utils.db_executor import DBExecutor
 
 class QPGOracle(BaseOracle):
     """
-    Detects optimizer bugs by analyzing and comparing query plans and contributes
-    to corpus evolution by finding queries with unique execution plans.
+    Query Plan Guidance (QPG) Oracle for detecting optimization bugs.
+    
+    QPG is a feedback-guided test case generation approach based on the insight that
+    query plans capture whether interesting behavior is exercised within the DBMS.
+    
+    It works by mutating the database state when no new query plans have been observed
+    after executing a number of queries, expecting that the new state enables new query
+    plans to be triggered.
     """
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.logger = logging.getLogger(self.name)
-        self.oracle_config = self.config.get('oracles', {}).get(self.name, {})
+    
+    def __init__(self, db_executor: DBExecutor):
+        super().__init__(db_executor)
+        self.logger = logging.getLogger(__name__)
+        self.name = "QPGOracle"
+        self.observed_plans = set()
+        self.plan_history = []
+        self.max_plans_without_change = 50
+        self.queries_since_last_plan_change = 0
         
-        # --- State for Corpus Evolution ---
-        self.seen_plan_structures = set()
-        self.evo_config = self.config.get('corpus_evolution', {})
-        self.evo_dir = self.evo_config.get('directory')
+    def check(self, sql_query: str) -> Tuple[bool, Optional[str], Optional[str]]:
+        """
+        Check for optimization bugs using QPG technique.
         
-        # --- Smart Filtering Configuration ---
-        self.enable_smart_filtering = self.oracle_config.get('enable_smart_filtering', True)
-        self.filter_type_casting = self.oracle_config.get('filter_type_casting', True)
-        self.filter_storage_filters = self.oracle_config.get('filter_storage_filters', True)
-        self.min_significant_changes = self.oracle_config.get('min_significant_changes', 2)
-
-    def can_check(self, sql_or_ast: Union[str, 'SQLNode'], exception: Optional[Exception]) -> bool:
+        Args:
+            sql_query: The SQL query to test
+            
+        Returns:
+            Tuple of (bug_found, bug_description, reproduction_query)
         """
-        This oracle is only interested in successful SELECT queries, as it
-        needs a valid query plan to analyze.
+        try:
+            # Only test SELECT queries
+            if not self._is_select_query(sql_query):
+                return False, None, None
+            
+            # Generate a QPG check query
+            qpg_check_query = self._generate_qpg_check_query(sql_query)
+            if not qpg_check_query:
+                return False, None, None
+            
+            # Execute the QPG check query
+            result = self.db_executor.execute_query(qpg_check_query, fetch_results=False)
+            if not result.success:
+                return False, None, None
+            
+            # Get the query plan for the original query
+            original_plan = self._get_query_plan(sql_query)
+            if not original_plan:
+                return False, None, None
+            
+            # Get the query plan for the QPG check query
+            check_plan = self._get_query_plan(qpg_check_query)
+            if not check_plan:
+                return False, None, None
+            
+            # Check if we have a new query plan
+            if self._is_new_plan(check_plan):
+                self.logger.info(f"New query plan observed: {check_plan}")
+                return True, "New query plan observed", {
+                    'original_plan': original_plan,
+                    'new_plan': check_plan,
+                    'qpg_check_query': qpg_check_query
+                }
+            
+            return False, None, None
+            
+        except Exception as e:
+            self.logger.error(f"Error in QPG check: {e}")
+            return False, None, None
+    
+    def check_for_bugs(self, sql_query: str) -> Tuple[bool, str, Any]:
         """
-        if exception:
+        Check for QPG bugs in the given SQL query.
+        
+        Returns:
+            Tuple of (bug_found, bug_description, bug_context)
+        """
+        try:
+            if not self.can_check(sql_query):
+                return False, None, None
+            
+            # Generate a QPG check query
+            qpg_check_query = self._generate_qpg_check_query(sql_query)
+            if not qpg_check_query:
+                return False, None, None
+            
+            # Execute the QPG check query
+            result = self.db_executor.execute_query(qpg_check_query, fetch_results=False)
+            if not result.success:
+                return False, None, None
+            
+            # Get the query plan for the original query
+            original_plan = self._get_query_plan(sql_query)
+            if not original_plan:
+                return False, None, None
+            
+            # Get the query plan for the QPG check query
+            check_plan = self._get_query_plan(qpg_check_query)
+            if not check_plan:
+                return False, None, None
+            
+            # Check if we have a new query plan
+            if self._is_new_plan(check_plan):
+                self.logger.info(f"New query plan observed: {check_plan}")
+                return True, "New query plan observed", {
+                    'original_plan': original_plan,
+                    'new_plan': check_plan,
+                    'qpg_check_query': qpg_check_query
+                }
+            
+            return False, None, None
+            
+        except Exception as e:
+            self.logger.error(f"Error in QPG check: {e}")
+            return False, None, None
+    
+    def _is_select_query(self, sql_query: str) -> bool:
+        """Check if the query is a SELECT statement."""
+        return sql_query.strip().upper().startswith("SELECT")
+    
+    def _get_query_plan(self, sql_query: str) -> str:
+        """Get the query plan for a SQL query."""
+        try:
+            # Use EXPLAIN ANALYZE to get the query plan
+            explain_query = f"EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) {sql_query}"
+            result = self.db_executor.execute_query(explain_query, fetch_results=True)
+            
+            if result.success and result.data:
+                # Extract the plan from the result
+                plan_lines = [str(row[0]) for row in result.data]
+                return "|".join(plan_lines)
+            else:
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"Failed to get query plan: {e}")
+            return None
+    
+    def _is_new_plan(self, plan: str) -> bool:
+        """Check if this is a new query plan we haven't seen before."""
+        if not plan:
             return False
         
-        sql_query = sql_or_ast if isinstance(sql_or_ast, str) else sql_or_ast.to_sql()
-        return sql_query.strip().upper().startswith("SELECT")
-
-    def check(self, sql_or_ast: Union[str, 'SQLNode'], result: Optional[list], exception: Optional[Exception]):
-        """
-        Orchestrates the various optimizer checks.
-        """
-        sql_query = sql_or_ast if isinstance(sql_or_ast, str) else sql_or_ast.to_sql()
-
-        # Get the initial, detailed plan for analysis
-        explain_query = f"EXPLAIN (ANALYZE, VERBOSE, COSTS) {sql_query}"
-        plan_result, plan_exception = self.executor.execute_query(explain_query)
-        if plan_exception or not plan_result:
-            self.logger.warning(f"Could not retrieve EXPLAIN ANALYZE plan for query: {sql_query[:100]}...")
-            return
+        # Simple check: if we haven't seen this plan before, it's new
+        if plan not in self.observed_plans:
+            self.observed_plans.add(plan)
+            return True
         
-        plan_text = "\n".join(str(row[0]) for row in plan_result)
-        
-        # --- Corpus Evolution Check ---
-        self._check_for_new_plan_structure(sql_query, plan_text)
-
-        # Run Cardinality Estimation check
-        if self.oracle_config.get('enable_cert', False):
-            self.logger.debug("Running CERT check...")
-            self._run_cert_check(sql_query, plan_text)
-            
-        # Run Differential Query Plan check
-        if self.oracle_config.get('enable_dqp', False):
-            self.logger.debug("Running DQP check...")
-            self._run_dqp_check(sql_query)
-
-        # Run Constant Optimization check
-        if self.oracle_config.get('enable_coddtest', False):
-            self.logger.debug("Running CODDTest check...")
-            self._run_codd_check(sql_query)
-
-    def _normalize_plan(self, plan_text: str) -> str:
-        """
-        Normalizes a query plan by removing volatile details like costs,
-        times, and memory usage, leaving only the structural information.
-        """
-        plan_text = re.sub(r'cost=[\d\.]+\.\.[\d\.]+', '', plan_text)
-        plan_text = re.sub(r'rows=\d+', '', plan_text)
-        plan_text = re.sub(r'width=\d+', '', plan_text)
-        plan_text = re.sub(r'actual time=[\d\.]+\.\.[\d\.]+', '', plan_text)
-        plan_text = re.sub(r'Memory: \w+', '', plan_text)
-        plan_text = re.sub(r'Buckets: \d+', '', plan_text)
-        plan_text = re.sub(r'fuzz_table_\d+_\d+', 'fuzz_table', plan_text)
-        return " ".join(plan_text.split())
-
-    def _save_to_evolved_corpus(self, sql_query: str, reason: str):
-        """Saves an interesting query to the evolved corpus queries.sql file."""
-        if not self.evo_config.get('enabled', False):
-            return
-        
-        try:
-            # Append to the main evolved corpus queries.sql file
-            evo_queries_file = os.path.join(self.evo_dir, 'queries.sql') if self.evo_dir else 'evolved_corpus/queries.sql'
-            
-            # Create the file if it doesn't exist
-            if not os.path.exists(evo_queries_file):
-                with open(evo_queries_file, 'w') as f:
-                    f.write("-- Queries which have resulted in bugs in the past\n")
-                    f.write("-- or have interesting query plan structures\n\n")
-            
-            # Append the new query
-            with open(evo_queries_file, 'a') as f:
-                f.write(f"\n-- {reason}\n")
-                f.write(f"{sql_query}\n")
-                f.write(";\n")
-            
-            self.logger.info(f"Saved new interesting query to evolved corpus: {reason}")
-        except Exception as e:
-            self.logger.error(f"Failed to save query to evolved corpus: {e}")
-
-    def _check_for_new_plan_structure(self, sql_query: str, plan_text: str):
-        """Checks if the query produced a previously unseen plan structure."""
-        normalized_plan = self._normalize_plan(plan_text)
-        if normalized_plan not in self.seen_plan_structures:
-            self.seen_plan_structures.add(normalized_plan)
-            self._save_to_evolved_corpus(sql_query, "Discovered new query plan structure")
-
-    def _parse_plan_for_rows(self, plan_text: str) -> list[tuple[int, int]]:
-        """Parses EXPLAIN ANALYZE output for estimated vs actual rows."""
-        row_estimates = []
-        for line in plan_text.split('\n'):
-            match = re.search(r'rows=(\d+).*actual.*rows=(\d+)', line)
-            if match:
-                estimated = int(match.group(1))
-                actual = int(match.group(2))
-                row_estimates.append((estimated, actual))
-        return row_estimates
-
-    def _run_cert_check(self, sql_query: str, plan_text: str):
-        """Cardinality Estimation Robustness Testing (CERT) for real performance bugs."""
-        try:
-            # Try to force different execution plans using hints
-            alternative_plans = self._try_alternative_plans(sql_query)
-            if not alternative_plans:
-                return
-            
-            # Compare execution times
-            default_time = self._measure_execution_time(sql_query)
-            if default_time is None:
-                return
-            
-            # Check if any alternative plan is significantly faster
-            for plan_name, plan_query in alternative_plans.items():
-                alt_time = self._measure_execution_time(plan_query)
-                if alt_time and alt_time < default_time * 0.5:  # 50% faster
-                    # This is a real performance bug!
-                    catalog_snapshot = self.executor._capture_catalog_snapshot() if hasattr(self.executor, '_capture_catalog_snapshot') else {}
-                    
-                    self.reporter.report_bug(
-                        oracle_name=self.name,
-                        bug_type="CERT - Performance Bug",
-                        description=f"Alternative plan '{plan_name}' is {default_time/alt_time:.1f}x faster than default plan.",
-                        original_query=sql_query,
-                        context={
-                            "default_plan": plan_text,
-                            "default_time": default_time,
-                            "alternative_plan": plan_name,
-                            "alternative_time": alt_time,
-                            "speedup": default_time/alt_time
-                        },
-                        catalog_snapshot=catalog_snapshot
-                    )
-                    break
-        except Exception as e:
-            self.logger.warning(f"CERT check failed: {e}")
+        return False
     
-    def _try_alternative_plans(self, sql_query: str) -> Dict[str, str]:
-        """Tries to generate alternative execution plans using hints."""
-        alternatives = {}
-        
-        # Force different join methods
-        if 'JOIN' in sql_query.upper():
-            alternatives['Nested Loop'] = sql_query.replace('SELECT', 'SELECT /*+ NestLoop */', 1)
-            alternatives['Hash Join'] = sql_query.replace('SELECT', 'SELECT /*+ HashJoin */', 1)
-            alternatives['Merge Join'] = sql_query.replace('SELECT', 'SELECT /*+ MergeJoin */', 1)
-        
-        # Force different scan methods
-        if 'WHERE' in sql_query.upper():
-            alternatives['Index Scan'] = sql_query.replace('SELECT', 'SELECT /*+ IndexScan */', 1)
-            alternatives['Seq Scan'] = sql_query.replace('SELECT', 'SELECT /*+ SeqScan */', 1)
-        
-        # Force different sort methods
-        if 'ORDER BY' in sql_query.upper():
-            alternatives['External Sort'] = sql_query.replace('SELECT', 'SELECT /*+ SetWorkMem(1MB) */', 1)
-        
-        return alternatives
-    
-    def _measure_execution_time(self, sql_query: str) -> Optional[float]:
-        """Measures execution time of a query."""
+    def _extract_plan_signature(self, plan_data: List) -> Optional[str]:
+        """Extract a signature from the query plan for comparison."""
         try:
-            start_time = time.time()
-            result, exception = self.executor.execute_query(sql_query)
-            end_time = time.time()
-            
-            if exception:
+            if not plan_data:
                 return None
             
-            return end_time - start_time
-        except Exception:
+            # Convert plan data to string and extract key components
+            plan_text = '\n'.join([str(row) for row in plan_data])
+            
+            # Extract key plan elements (scan types, join methods, etc.)
+            signature_parts = []
+            
+            # Look for scan types
+            scan_patterns = [
+                r'Seq Scan',
+                r'Index Scan',
+                r'Bitmap Heap Scan',
+                r'Nested Loop',
+                r'Hash Join',
+                r'Merge Join'
+            ]
+            
+            for pattern in scan_patterns:
+                if re.search(pattern, plan_text, re.IGNORECASE):
+                    signature_parts.append(pattern)
+            
+            # Look for cost estimates
+            cost_match = re.search(r'cost=\d+\.\d+\.\.\d+\.\d+', plan_text)
+            if cost_match:
+                signature_parts.append(cost_match.group())
+            
+            # Look for row estimates
+            rows_match = re.search(r'rows=\d+', plan_text)
+            if rows_match:
+                signature_parts.append(rows_match.group())
+            
+            return '|'.join(signature_parts) if signature_parts else None
+            
+        except Exception as e:
+            self.logger.error(f"Error extracting plan signature: {e}")
+            return None
+    
+    def _mutate_database_state(self):
+        """Mutate database state to trigger new query plans."""
+        try:
+            self.logger.info("Mutating database state to trigger new query plans...")
+            
+            # Simple mutations: insert/update some data
+            mutations = [
+                "INSERT INTO ybfuzz_schema.products (id, name, category, price, stock_count) VALUES (9999, 'QPG_MUTATION', 'TEST', 99.99, 999)",
+                "UPDATE ybfuzz_schema.products SET stock_count = stock_count + 1 WHERE id = 1",
+                "DELETE FROM ybfuzz_schema.products WHERE id = 9999"
+            ]
+            
+            for mutation in mutations:
+                try:
+                    self.db_executor.execute_query(mutation)
+                except Exception as e:
+                    self.logger.warning(f"Mutation failed: {e}")
+            
+            self.logger.info("Database state mutation completed")
+            
+        except Exception as e:
+            self.logger.error(f"Error mutating database state: {e}")
+    
+    def _check_optimization_bugs(self, sql_query: str, plan_result: Any) -> Tuple[bool, Optional[str], Optional[str]]:
+        """
+        Check for optimization bugs by comparing with different optimization settings.
+        
+        Returns:
+            Tuple of (bug_found, bug_description, reproduction_query)
+        """
+        try:
+            # Check for cardinality estimation bugs
+            cardinality_bug = self._check_cardinality_estimation(sql_query, plan_result)
+            if cardinality_bug:
+                return True, "Cardinality Estimation Bug", cardinality_bug
+            
+            # Check for cost estimation bugs
+            cost_bug = self._check_cost_estimation(sql_query, plan_result)
+            if cost_bug:
+                return True, "Cost Estimation Bug", cost_bug
+            
+            # Check for plan selection bugs
+            plan_bug = self._check_plan_selection(sql_query, plan_result)
+            if plan_bug:
+                return True, "Plan Selection Bug", plan_bug
+            
+            return False, None, None
+            
+        except Exception as e:
+            self.logger.error(f"Error checking optimization bugs: {e}")
+            return False, None, None
+    
+    def _check_cardinality_estimation(self, sql_query: str, plan_result: Any) -> Optional[str]:
+        """Check for cardinality estimation bugs."""
+        try:
+            # Extract estimated vs actual row counts
+            plan_text = '\n'.join([str(row) for row in plan_result.data])
+            
+            # Look for row estimates
+            rows_match = re.search(r'rows=(\d+)', plan_text)
+            if not rows_match:
+                return None
+            
+            estimated_rows = int(rows_match.group(1))
+            
+            # Execute the actual query to get real row count
+            count_query = f"SELECT COUNT(*) FROM ({sql_query}) AS qpg_check"
+            count_result = self.db_executor.execute_query(count_query)
+            
+            if not count_result.success or not count_result.data:
+                return None
+            
+            actual_rows = count_result.data[0][0] if count_result.data else 0
+            
+            # Check for significant estimation errors (>10x difference)
+            if estimated_rows > 0 and actual_rows > 0:
+                ratio = max(estimated_rows, actual_rows) / min(estimated_rows, actual_rows)
+                if ratio > 10:
+                    return f"""
+-- Cardinality Estimation Bug Detected
+-- Query: {sql_query}
+-- Estimated rows: {estimated_rows}
+-- Actual rows: {actual_rows}
+-- Ratio: {ratio:.2f}x
+
+-- Reproduction:
+EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) {sql_query};
+SELECT COUNT(*) FROM ({sql_query}) AS qpg_check;
+"""
+            
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Error checking cardinality estimation: {e}")
+            return None
+    
+    def _check_cost_estimation(self, sql_query: str, plan_result: Any) -> Optional[str]:
+        """Check for cost estimation bugs."""
+        try:
+            # Extract cost estimates
+            plan_text = '\n'.join([str(row) for row in plan_result.data])
+            
+            # Look for cost estimates
+            cost_match = re.search(r'cost=(\d+\.\d+)\.\.(\d+\.\d+)', plan_text)
+            if not cost_match:
+                return None
+            
+            start_cost = float(cost_match.group(1))
+            end_cost = float(cost_match.group(2))
+            
+            # Check for unreasonable cost estimates
+            if start_cost < 0 or end_cost < 0 or end_cost < start_cost:
+                return f"""
+-- Cost Estimation Bug Detected
+-- Query: {sql_query}
+-- Start cost: {start_cost}
+-- End cost: {end_cost}
+
+-- Reproduction:
+EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) {sql_query};
+"""
+            
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Error checking cost estimation: {e}")
+            return None
+    
+    def _check_plan_selection(self, sql_query: str, plan_result: Any) -> Optional[str]:
+        """Check for plan selection bugs."""
+        try:
+            # Check if the plan contains suspicious patterns
+            plan_text = '\n'.join([str(row) for row in plan_result.data])
+            
+            # Look for suspicious plan patterns
+            suspicious_patterns = [
+                (r'Seq Scan.*WHERE.*=', 'Sequential scan on indexed column'),
+                (r'Hash Join.*WHERE.*=', 'Hash join when index join might be better'),
+                (r'Nested Loop.*large table', 'Nested loop on large table')
+            ]
+            
+            for pattern, description in suspicious_patterns:
+                if re.search(pattern, plan_text, re.IGNORECASE):
+                    return f"""
+-- Plan Selection Bug Detected
+-- Query: {sql_query}
+-- Issue: {description}
+
+-- Reproduction:
+EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) {sql_query};
+"""
+            
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Error checking plan selection: {e}")
             return None
 
-    def _run_dqp_check(self, sql_query: str):
-        """Differential Query Plans (DQP) by creating a temporary index."""
-        match = re.search(r'WHERE\s+"([^"]+)"\s*=', sql_query, re.IGNORECASE)
-        if not match: return
-        
-        column_to_index = match.group(1)
-        table_match = re.search(r'FROM\s+([^\s]+)', sql_query, re.IGNORECASE)
-        if not table_match: return
-        table_name_with_schema = table_match.group(1)
-        
-        index_name = f"ybfuzz_temp_idx_{int(time.time())}"
-
-        original_plan_res, _ = self.executor.execute_query(f"EXPLAIN {sql_query}")
-        if not original_plan_res: return
-        original_plan = "\n".join(str(row[0]) for row in original_plan_res)
-
-        setup_sqls = [f"CREATE INDEX {index_name} ON {table_name_with_schema} (\"{column_to_index}\");"]
-        teardown_sqls = [f"DROP INDEX IF EXISTS {index_name};"]
-        new_plan_res, exc = self.executor.execute_query_with_setup(setup_sqls, f"EXPLAIN {sql_query}", teardown_sqls)
-        if exc or not new_plan_res: return
-        
-        new_plan = "\n".join(str(row[0]) for row in new_plan_res)
-
-        if "Index Scan" not in new_plan and "Seq Scan" in original_plan:
-            # Capture catalog snapshot for bug reproduction
-            catalog_snapshot = self.executor._capture_catalog_snapshot() if hasattr(self.executor, '_capture_catalog_snapshot') else {}
+    def _generate_qpg_check_query(self, original_query: str) -> str:
+        """Generate a QPG check query to compare query plans."""
+        try:
+            # Remove any trailing semicolon from the original query
+            clean_query = original_query.rstrip(';').strip()
             
-            self.reporter.report_bug(
-                oracle_name=self.name,
-                bug_type="DQP - No Plan Change",
-                description=f"Optimizer did not use a newly created, relevant index on column '{column_to_index}'.",
-                original_query=sql_query,
-                context={
-                    "original_plan": original_plan,
-                    "new_plan_after_index": new_plan,
-                    "column_to_index": column_to_index,
-                    "table_name": table_name_with_schema
-                },
-                catalog_snapshot=catalog_snapshot
-            )
-
-    def _run_codd_check(self, sql_query: str):
-        """Constant Optimization Driven Testing (CODDTest) with smart filtering."""
-        match = re.search(r'(WHERE\s+.*[=\s><])(\d+\.?\d*)', sql_query, re.IGNORECASE)
-        if not match: return
-
-        prefix = match.group(1)
-        original_literal = match.group(2)
-        
-        # Generate a variant that's more likely to trigger type changes
-        if '.' in original_literal:
-            # If original is decimal, try integer
-            new_literal = str(int(float(original_literal)) + random.randint(1, 5))
-        else:
-            # If original is integer, try decimal
-            new_literal = str(float(original_literal) + random.uniform(1, 10))
-        
-        variant_query = sql_query.replace(f"{prefix}{original_literal}", f"{prefix}{new_literal}", 1)
-
-        original_plan_res, _ = self.executor.execute_query(f"EXPLAIN {sql_query}")
-        variant_plan_res, _ = self.executor.execute_query(f"EXPLAIN {variant_query}")
-        if not original_plan_res or not variant_plan_res: return
-
-        original_plan = "\n".join(str(row[0]) for row in original_plan_res)
-        variant_plan = "\n".join(str(row[0]) for row in variant_plan_res)
-
-        # Apply smart filtering if enabled
-        if self.enable_smart_filtering:
-            # Check if this is a false positive due to type casting
-            if self.filter_type_casting and self._is_type_casting_false_positive(original_plan, variant_plan, original_literal, new_literal):
-                self.logger.debug(f"Filtering out type casting false positive: {original_literal} -> {new_literal}")
-                return
-
-            # Check if this is a false positive due to storage filter changes
-            if self.filter_storage_filters and self._is_storage_filter_false_positive(original_plan, variant_plan):
-                self.logger.debug("Filtering out storage filter false positive")
-                return
-
-        # Only report if there are significant structural changes
-        if self._has_significant_plan_changes(original_plan, variant_plan):
-            # Capture catalog snapshot for bug reproduction
-            catalog_snapshot = self.executor._capture_catalog_snapshot() if hasattr(self.executor, '_capture_catalog_snapshot') else {}
+            # Generate a simple check query that will have a different plan
+            # Use a subquery to force different execution path
+            qpg_check = f"SELECT COUNT(*) FROM ({clean_query}) AS qpg_check"
             
-            self.reporter.report_bug(
-                oracle_name=self.name,
-                bug_type="CODDTest - Unstable Plan",
-                description="Query plan structure changed unexpectedly for a minor change in a literal constant.",
-                original_query=sql_query,
-                variant_query=variant_query,
-                original_plan=original_plan,
-                variant_plan=variant_plan,
-                context={
-                    "original_plan": original_plan,
-                    "variant_plan": variant_plan,
-                    "original_literal": original_literal,
-                    "new_literal": new_literal
-                },
-                catalog_snapshot=catalog_snapshot
-            )
-
-    def _is_type_casting_false_positive(self, original_plan: str, variant_plan: str, 
-                                       original_literal: str, new_literal: str) -> bool:
-        """Detects if plan change is just due to type casting (expected behavior)."""
-        # Check if the only difference is type casting in storage filters
-        original_has_cast = "::" in original_plan
-        variant_has_cast = "::" in variant_plan
-        
-        # If one has casting and the other doesn't, it's likely a type casting change
-        if original_has_cast != variant_has_cast:
-            # Check if the literals have different types
-            original_is_int = '.' not in original_literal
-            new_is_int = '.' not in new_literal
-            
-            if original_is_int != new_is_int:
-                self.logger.debug(f"Type casting detected: {original_literal} ({'int' if original_is_int else 'float'}) -> {new_literal} ({'int' if new_is_int else 'float'})")
-                return True
-        
-        return False
-
-    def _is_storage_filter_false_positive(self, original_plan: str, variant_plan: str) -> bool:
-        """Detects if plan change is just due to storage filter modifications (expected behavior)."""
-        # Check if the only changes are in storage filter expressions
-        original_storage = re.findall(r'Storage Filter: \(([^)]+)\)', original_plan)
-        variant_storage = re.findall(r'Storage Filter: \(([^)]+)\)', variant_plan)
-        
-        if original_storage and variant_storage:
-            # If both have storage filters but they're just type casting differences
-            original_filter = original_storage[0]
-            variant_filter = variant_storage[0]
-            
-            # Check if the only difference is type casting
-            if (original_filter.replace('::numeric', '').replace('::int', '') == 
-                variant_filter.replace('::numeric', '').replace('::int', '')):
-                return True
-        
-        return False
-
-    def _has_significant_plan_changes(self, original_plan: str, variant_plan: str) -> bool:
-        """Determines if plan changes are significant enough to report as a bug."""
-        # Normalize plans by removing costs, rows, and other volatile details
-        normalize = lambda plan: [re.sub(r'\(cost=.*?\)', '', line) for line in plan.split('\n')]
-        
-        original_normalized = normalize(original_plan)
-        variant_normalized = normalize(variant_plan)
-        
-        # Count structural differences
-        differences = 0
-        for i, (orig_line, var_line) in enumerate(zip(original_normalized, variant_normalized)):
-            if orig_line.strip() != var_line.strip():
-                # Ignore minor differences in storage filters
-                if 'Storage Filter:' in orig_line and 'Storage Filter:' in var_line:
-                    continue
-                # Ignore cost-only differences
-                if self._is_cost_only_difference(orig_line, var_line):
-                    continue
-                # Ignore row estimation differences
-                if self._is_row_estimation_difference(orig_line, var_line):
-                    continue
-                differences += 1
-        
-        # Only report if there are significant structural changes (not just type casting)
-        return differences > self.min_significant_changes
-
-    def _is_cost_only_difference(self, line1: str, line2: str) -> bool:
-        """Checks if the only difference between lines is cost information."""
-        # Remove cost information and compare
-        clean1 = re.sub(r'cost=[\d\.]+\.\.[\d\.]+', '', line1)
-        clean2 = re.sub(r'cost=[\d\.]+\.\.[\d\.]+', '', line2)
-        return clean1.strip() == clean2.strip()
-
-    def _is_row_estimation_difference(self, line1: str, line2: str) -> bool:
-        """Checks if the only difference between lines is row estimation."""
-        # Remove row estimation and compare
-        clean1 = re.sub(r'rows=\d+', '', line1)
-        clean2 = re.sub(r'rows=\d+', '', line2)
-        return clean1.strip() == clean2.strip()
+            return qpg_check
+        except Exception as e:
+            self.logger.error(f"Failed to generate QPG check query: {e}")
+            # Fallback to a simple query
+            return "SELECT COUNT(*) FROM (SELECT 1) AS qpg_check"

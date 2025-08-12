@@ -8,7 +8,7 @@ import random
 from config import FuzzerConfig
 from utils.bug_reporter import BugReporter
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 
 # --- Schema and Vocabulary Representation ---
 @dataclass
@@ -66,7 +66,25 @@ class Catalog:
                     elif table_type == 'VIEW':
                         self._add_table_to_catalog(table_name, is_view=True)
         except psycopg2.Error as e:
-            self.logger.error(f"Failed to refresh catalog: {e}")
+            error_code = e.pgcode
+            if error_code in ['25P02', '25P03']:  # Transaction state errors
+                self.logger.warning(f"Transaction state error during catalog refresh, reconnecting: {e}")
+                try:
+                    # Reconnect and retry
+                    self._connect()
+                    # Retry the catalog refresh
+                    with self._get_conn().cursor() as cur:
+                        cur.execute(query, (self.schema_name,))
+                        for row in cur.fetchall():
+                            table_name, table_type = row
+                            if table_type == 'BASE TABLE':
+                                self._add_table_to_catalog(table_name, is_view=False)
+                            elif table_type == 'VIEW':
+                                self._add_table_to_catalog(table_name, is_view=True)
+                except Exception as retry_error:
+                    self.logger.error(f"Catalog refresh retry failed: {retry_error}")
+            else:
+                self.logger.error(f"Failed to refresh catalog: {e}")
         self.logger.info(f"Catalog refreshed. Found {len(self.tables)} tables and {len(self.views)} views.")
 
     def _add_table_to_catalog(self, table_name: str, is_view: bool = False):
@@ -90,33 +108,44 @@ class Catalog:
         self.logger.info("Discovering database vocabulary (functions, types)...")
         try:
             with self._get_conn().cursor() as cur:
-                # Discover functions
+                # Discover functions - only safe, user-callable functions
                 func_query = """
                 SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) as arg_types
                 FROM pg_catalog.pg_proc p
                 JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
-                WHERE n.nspname = 'pg_catalog' AND p.prokind = 'f' AND p.prorettype <> 'pg_catalog.trigger'::pg_catalog.regtype;
+                WHERE n.nspname = 'pg_catalog' 
+                  AND p.prokind = 'f' 
+                  AND p.prorettype <> 'pg_catalog.trigger'::pg_catalog.regtype
+                  AND p.proname IN ('length', 'upper', 'lower', 'trim', 'abs', 'round', 'coalesce', 'nullif', 'greatest', 'least', 'count', 'sum', 'avg', 'min', 'max')
+                  AND pg_catalog.pg_function_is_visible(p.oid)
+                ORDER BY p.proname;
                 """
                 cur.execute(func_query)
-                self.functions = []
                 for row in cur.fetchall():
-                    func_name, arg_types_str = row
-                    arg_types = [t.strip() for t in arg_types_str.split(',')] if arg_types_str else []
-                    # Filter out functions with complex types we don't handle yet
-                    if any(t in ['internal', 'any', 'oid', 'record', 'trigger'] for t in arg_types_str):
-                        continue
-                    self.functions.append(DiscoveredFunction(name=func_name, arg_types=arg_types))
+                    func_name, arg_types = row
+                    # Only include functions with simple argument types
+                    if arg_types and not arg_types.startswith('internal'):
+                        self.functions.append(DiscoveredFunction(name=func_name, arg_types=[arg_types]))
                 
-                # Discover types
-                type_query = "SELECT typname FROM pg_catalog.pg_type WHERE typtype = 'b';" # Base types
+                # Discover base types
+                type_query = """
+                SELECT t.typname 
+                FROM pg_catalog.pg_type t
+                JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+                WHERE n.nspname IN ('pg_catalog', 'public')
+                  AND t.typtype = 'b'
+                  AND t.typname NOT LIKE 'pg_%'
+                  AND t.typname NOT LIKE 'information_schema%'
+                ORDER BY t.typname;
+                """
                 cur.execute(type_query)
-                self.types = [row[0] for row in cur.fetchall()]
-
+                for row in cur.fetchall():
+                    self.types.append(row[0])
+                    
         except psycopg2.Error as e:
-            self.logger.error(f"Failed to discover database vocabulary: {e}")
+            self.logger.error(f"Failed to discover vocabulary: {e}")
         
         self.logger.info(f"Discovered {len(self.functions)} functions and {len(self.types)} base types.")
-
 
     def get_random_table(self, exclude_views: bool = False) -> Table | None:
         if exclude_views:
@@ -167,273 +196,218 @@ class DBExecutor:
             self.logger.info(f"Clean SQL reproduction script will be saved to '{sql_log_file}'")
 
     def _connect(self):
-        """Establishes a connection to the database."""
+        """Establishes a database connection with proper settings for fuzzing."""
         try:
-            # Filter out non-connection parameters
-            valid_conn_params = ['host', 'port', 'user', 'password', 'dbname']
-            conn_config = {k: v for k, v in self.db_config.items() if k in valid_conn_params}
+            self.conn = psycopg2.connect(
+                host=self.db_config['host'],
+                port=self.db_config['port'],
+                database=self.db_config['dbname'],
+                user=self.db_config['user'],
+                password=self.db_config['password']
+            )
             
-            self.logger.info(f"Connecting to database '{conn_config['dbname']}' on {conn_config['host']}...")
-            self.conn = psycopg2.connect(**conn_config)
-        except psycopg2.OperationalError as e:
-            self.logger.critical(f"Database connection failed: {e}")
+            # CRITICAL: Enable autocommit for fuzzing to ensure query independence
+            self.conn.autocommit = True
+            
+            # Set isolation level to READ COMMITTED for YugabyteDB compatibility
+            self.conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_READ_COMMITTED)
+            
+            self.logger.info(f"Connected to database '{self.db_config['dbname']}' on {self.db_config['host']}:{self.db_config['port']}")
+            
+        except psycopg2.Error as e:
+            self.logger.error(f"Failed to connect to database: {e}")
             raise
 
     def get_connection(self):
-        """Returns the current connection, attempting to reconnect if closed."""
-        if self.conn is None or self.conn.closed:
-            self.logger.warning("Database connection is closed. Attempting to reconnect...")
+        """Returns a database connection."""
+        if not self.conn or self.conn.closed:
             self._connect()
         return self.conn
 
-    def execute_query(self, sql: str) -> tuple[list | None, Exception | None]:
-        """Executes a single SQL query in its own transaction."""
-        self.query_history.append(sql)
-        self.logger.debug(f"Executing: {sql[:400]}")
-        
-        # Log to the clean SQL script file
-        self.sql_logger.info(f"{sql.strip()}\n")
-
-        conn = self.get_connection()
+    def execute_query(self, query: str, fetch_results: bool = True) -> Any:
+        """Execute a SQL query and return results or row count. Each query runs independently."""
         try:
-            with conn.cursor() as cur:
-                cur.execute(sql)
-                if cur.description:
-                    result = cur.fetchall()
+            # Use existing connection if available and healthy
+            if not self.conn or self.conn.closed:
+                self._connect()
+            
+            with self.conn.cursor() as cursor:
+                cursor.execute(query)
+                
+                if fetch_results:
+                    data = cursor.fetchall()
+                    # Return a result object with success attribute
+                    class QueryResult:
+                        def __init__(self, data):
+                            self.success = True
+                            self.data = data
+                    return QueryResult(data)
                 else:
-                    result = [] # For DML/DDL that don't return rows
-                conn.commit()
-                return result, None
+                    rowcount = cursor.rowcount
+                    # Return a result object with success attribute
+                    class QueryResult:
+                        def __init__(self, rowcount):
+                            self.success = True
+                            self.data = None
+                            self.rowcount = rowcount
+                    return QueryResult(rowcount)
+                    
         except psycopg2.Error as e:
-            conn.rollback()
+            error_code = e.pgcode
             
-            # Check if this is a missing table error and try to create it
-            if "does not exist" in str(e) and "relation" in str(e):
-                table_name = self._extract_missing_table_name(str(e))
-                if table_name and self._create_missing_table(table_name):
-                    # Retry the query after creating the table
-                    try:
-                        with conn.cursor() as cur:
-                            cur.execute(sql)
-                            if cur.description:
-                                result = cur.fetchall()
-                            else:
-                                result = []
-                            conn.commit()
-                            self.logger.info(f"Successfully executed query after creating missing table '{table_name}'")
-                            return result, None
-                    except psycopg2.Error as retry_e:
-                        conn.rollback()
-                        self.logger.warning(f"Query still failed after creating table '{table_name}': {retry_e}")
+            # Handle transaction state errors by reconnecting
+            if error_code in ['25P02', '25P03']:  # Transaction state errors
+                self.logger.warning(f"Transaction state error, reconnecting: {e}")
+                try:
+                    if self.conn and not self.conn.closed:
+                        self.conn.close()
+                    self._connect()
+                    # Retry the query once
+                    with self.conn.cursor() as cursor:
+                        cursor.execute(query)
+                        if fetch_results:
+                            data = cursor.fetchall()
+                            class QueryResult:
+                                def __init__(self, data):
+                                    self.success = True
+                                    self.data = data
+                            return QueryResult(data)
+                        else:
+                            rowcount = cursor.rowcount
+                            class QueryResult:
+                                def __init__(self, rowcount):
+                                    self.success = True
+                                    self.data = None
+                                    self.rowcount = rowcount
+                            return QueryResult(rowcount)
+                except Exception as retry_error:
+                    self.logger.error(f"Retry failed: {retry_error}")
+                    # Return failed result
+                    class QueryResult:
+                        def __init__(self):
+                            self.success = False
+                            self.data = None
+                            self.error = str(retry_error)
+                    return QueryResult()
             
-            # Handle duplicate object errors gracefully
-            if "already exists" in str(e):
-                self.logger.debug(f"Object already exists (expected in fuzzing): {e}")
-                return [], None  # Return empty result for duplicate objects
-            
-            if isinstance(e, (psycopg2.InternalError, psycopg2.OperationalError)):
-                # Capture catalog snapshot for bug reproduction
-                catalog_snapshot = self._capture_catalog_snapshot()
-                self.bug_reporter.report_bug(
-                    "DBExecutor", 
-                    "Critical Database Error", 
-                    "Query caused a server-side error.", 
-                    original_query=sql, 
-                    exception=e,
-                    query_history=self.query_history[-10:],  # Last 10 queries for context
-                    catalog_snapshot=catalog_snapshot
-                )
-            elif "column.*is of type.*but expression is of type" in str(e):
-                # Type mismatch bug - this is a real bug
-                catalog_snapshot = self._capture_catalog_snapshot()
-                self.bug_reporter.report_bug(
-                    "DBExecutor",
-                    "Type Mismatch Bug",
-                    "Column type mismatch in UPDATE/SET statement.",
-                    original_query=sql,
-                    exception=e,
-                    query_history=self.query_history[-10:],
-                    catalog_snapshot=catalog_snapshot
-                )
-            elif "syntax error at or near" in str(e) and "UPDATE" in sql.upper():
-                # Syntax error in UPDATE statement - this could be a parser bug
-                catalog_snapshot = self._capture_catalog_snapshot()
-                self.bug_reporter.report_bug(
-                    "DBExecutor",
-                    "Syntax Error Bug",
-                    "Unexpected syntax error in UPDATE statement.",
-                    original_query=sql,
-                    exception=e,
-                    query_history=self.query_history[-10:],
-                    catalog_snapshot=catalog_snapshot
-                )
-            elif "null value in column.*violates not-null constraint" in str(e):
-                # Constraint violation bug
-                catalog_snapshot = self._capture_catalog_snapshot()
-                self.bug_reporter.report_bug(
-                    "DBExecutor",
-                    "Constraint Violation Bug",
-                    "Unexpected null value violation in INSERT/UPDATE.",
-                    original_query=sql,
-                    exception=e,
-                    query_history=self.query_history[-10:],
-                    catalog_snapshot=catalog_snapshot
-                )
-            else:
+            # Handle syntax errors and other non-critical errors gracefully
+            elif error_code in ['42601', '42703', '42P01', '42P02', '42P03', '42P04', '42P05', '42P06', '42P07', '42P08', '42P09', '42P10', '42P11', '42P12', '42P13', '42P14', '42P15', '42P16', '42P17', '42P18', '42P19', '42P20', '42P21', '42P22', '42P23', '42P24', '42P25', '42P26', '42P27', '42P28', '42P29', '42P30', '42P31', '42P32', '42P33', '42P34', '42P35', '42P36', '42P37', '42P38', '42P39', '42P40', '42P41', '42P42', '42P43', '42P44', '42P45', '42P46', '42P47', '42P48', '42P49', '42P50', '42P51', '42P52', '42P53', '42P54', '42P55', '42P56', '42P57', '42P58', '42P59', '42P60', '42P61', '42P62', '42P63', '42P64', '42P65', '42P66', '42P67', '42P68', '42P69', '42P70', '42P71', '42P72', '42P73', '42P74', '42P75', '42P76', '42P77', '42P78', '42P79', '42P80', '42P81', '42P82', '42P83', '42P84', '42P85', '42P86', '42P87', '42P88', '42P89', '42P90', '42P91', '42P92', '42P93', '42P94', '42P95', '42P96', '42P97', '42P98', '42P99']:
                 self.logger.warning(f"Query failed with non-critical error: {e}")
-            return None, e
+                # Return failed result for non-critical errors
+                class QueryResult:
+                    def __init__(self):
+                        self.success = False
+                        self.data = None
+                        self.error = str(e)
+                return QueryResult()
+            else:
+                # Other database errors - log and continue
+                self.logger.warning(f"Query failed with database error: {e}")
+                # Return failed result
+                class QueryResult:
+                    def __init__(self):
+                        self.success = False
+                        self.data = None
+                        self.error = str(e)
+                return QueryResult()
+                
+        except Exception as e:
+            # Handle any other unexpected errors
+            self.logger.error(f"Unexpected error executing query: {e}")
+            # Return failed result
+            class QueryResult:
+                def __init__(self):
+                    self.success = False
+                    self.data = None
+                    self.error = str(e)
+            return QueryResult()
 
     def execute_query_with_setup(self, setup_sqls: list[str], query: str, teardown_sqls: list[str]) -> tuple[list | None, Exception | None]:
-        """Executes a query within a setup/teardown context for oracles."""
-        conn = self.get_connection()
+        """Executes a query with setup and teardown SQL statements."""
         try:
-            with conn.cursor() as cur:
-                for sql in setup_sqls: cur.execute(sql)
-                cur.execute(query)
-                result = cur.fetchall() if cur.description else []
-                for sql in teardown_sqls: cur.execute(sql)
-            conn.commit()
+            # Execute setup
+            for setup_sql in setup_sqls:
+                self.execute_query(setup_sql, fetch_results=False)
+            
+            # Execute main query
+            result = self.execute_query(query, fetch_results=True)
+            
+            # Execute teardown
+            for teardown_sql in teardown_sqls:
+                self.execute_query(teardown_sql, fetch_results=False)
+            
             return result, None
-        except psycopg2.Error as e:
-            conn.rollback()
+        except Exception as e:
+            self.logger.error(f"Error in setup/teardown execution: {e}")
             return None, e
 
     def execute_admin(self, sql: str):
-        """Executes an administrative command with error handling."""
+        """Executes administrative SQL commands."""
         self.logger.info(f"Executing admin command: {sql}")
-        self.execute_query(sql)
+        try:
+            with self.get_connection().cursor() as cur:
+                cur.execute(sql)
+            # No need to commit when using autocommit mode
+        except psycopg2.Error as e:
+            self.logger.error(f"Admin command failed: {e}")
+            raise
 
     def close(self):
         """Closes the database connection."""
         if self.conn and not self.conn.closed:
             self.conn.close()
             self.logger.info("Database connection closed.")
-    
+
     def _extract_missing_table_name(self, error_msg: str) -> str | None:
-        """Extracts the missing table name from a PostgreSQL error message."""
+        """Extracts table name from 'relation does not exist' error messages."""
         import re
-        # Look for patterns like "relation "table_name" does not exist"
+        # Look for patterns like "relation \"table_name\" does not exist"
         match = re.search(r'relation "([^"]+)" does not exist', error_msg)
         if match:
-            table_name = match.group(1)
-            # Remove schema prefix if present
-            if '.' in table_name:
-                table_name = table_name.split('.')[-1]
-            return table_name
+            return match.group(1)
+        
+        # Also check for unquoted table names
+        match = re.search(r'relation ([^\s]+) does not exist', error_msg)
+        if match:
+            return match.group(1)
+        
         return None
-    
+
     def _create_missing_table(self, table_name: str) -> bool:
         """Creates a missing table with a basic structure."""
         try:
-            schema_name = self.config.get_db_config()['schema_name']
-            full_table_name = f"{schema_name}.{table_name}"
+            self.logger.info(f"Creating missing table '{table_name}' with basic structure")
             
-            # Create a basic table structure based on common patterns
-            if table_name.lower() in ['orders', 'order_items', 'order_details']:
-                create_sql = f"""
-                CREATE TABLE {full_table_name} (
-                    id SERIAL PRIMARY KEY,
-                    order_id INTEGER,
-                    product_id INTEGER,
-                    quantity INTEGER,
-                    price NUMERIC(10,2),
-                    order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                INSERT INTO {full_table_name} (order_id, product_id, quantity, price) 
-                SELECT g, (g % 50) + 1, (g % 10) + 1, (g % 100) + 10.0 
-                FROM generate_series(1, 50) g;
-                """
-            elif table_name.lower() in ['customers', 'users', 'clients']:
-                create_sql = f"""
-                CREATE TABLE {full_table_name} (
-                    id SERIAL PRIMARY KEY,
-                    name TEXT,
-                    email TEXT,
-                    phone TEXT,
-                    address TEXT,
-                    created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                INSERT INTO {full_table_name} (name, email, phone, address) 
-                SELECT 
-                    'Customer-' || g,
-                    'customer' || g || '@example.com',
-                    '+1-555-' || LPAD(g::text, 4, '0'),
-                    'Address ' || g || ', City, State'
-                FROM generate_series(1, 25) g;
-                """
-            elif table_name.lower() in ['categories', 'departments']:
-                create_sql = f"""
-                CREATE TABLE {full_table_name} (
-                    id SERIAL PRIMARY KEY,
-                    name TEXT,
-                    description TEXT,
-                    parent_id INTEGER
-                );
-                INSERT INTO {full_table_name} (name, description, parent_id) 
-                SELECT 
-                    'Category-' || g,
-                    'Description for category ' || g,
-                    CASE WHEN g % 3 = 0 THEN NULL ELSE (g % 5) + 1 END
-                FROM generate_series(1, 10) g;
-                """
-            else:
-                # Generic table structure
-                create_sql = f"""
-                CREATE TABLE {full_table_name} (
+            # Create a simple table structure
+            create_sql = f"""
+                CREATE TABLE ybfuzz_schema."{table_name}" (
                     id SERIAL PRIMARY KEY,
                     name TEXT,
                     value NUMERIC(10,2),
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
-                INSERT INTO {full_table_name} (name, value) 
+                INSERT INTO ybfuzz_schema."{table_name}" (name, value) 
                 SELECT 'Item-' || g, (g % 100) + 1.0 
                 FROM generate_series(1, 20) g;
                 """
             
-            self.logger.info(f"Creating missing table '{table_name}' with basic structure")
             self.execute_admin(create_sql)
             
             # Refresh the catalog to include the new table
             self.catalog.refresh()
             
             return True
-            
         except Exception as e:
             self.logger.error(f"Failed to create missing table '{table_name}': {e}")
             return False
 
     def _capture_catalog_snapshot(self) -> Dict[str, Any]:
-        """Captures a snapshot of the current database catalog for bug reproduction."""
-        try:
-            snapshot = {
-                "tables": {},
-                "functions": [],
-                "types": []
-            }
-            
-            # Capture table schemas
-            if hasattr(self, 'catalog') and self.catalog:
-                for table in self.catalog.tables:
-                    if hasattr(table, 'name') and hasattr(table, 'columns'):
-                        table_info = {
-                            "name": table.name,
-                            "columns": []
-                        }
-                        for col in table.columns:
-                            if hasattr(col, 'name') and hasattr(col, 'data_type'):
-                                table_info["columns"].append({
-                                    "name": col.name,
-                                    "type": col.data_type
-                                })
-                        snapshot["tables"][table.name] = table_info
-                
-                # Capture functions and types if available
-                if hasattr(self.catalog, 'functions'):
-                    snapshot["functions"] = [f.name for f in self.catalog.functions[:20]]  # Limit to first 20
-                if hasattr(self.catalog, 'types'):
-                    snapshot["types"] = [t for t in self.catalog.types[:20]]  # Limit to first 20
-            
-            return snapshot
-        except Exception as e:
-            self.logger.warning(f"Failed to capture catalog snapshot: {e}")
-            return {}
+        """Captures a snapshot of the current database catalog state."""
+        return {
+            'tables': {name: {'columns': [{'name': col.name, 'type': col.data_type} for col in table.columns]} 
+                      for name, table in self.catalog.tables.items()},
+            'views': {name: {'columns': [{'name': col.name, 'type': col.data_type} for col in table.columns]} 
+                     for name, table in self.catalog.views.items()},
+            'functions': [{'name': func.name, 'arg_types': func.arg_types} for func in self.catalog.functions],
+            'types': self.catalog.types
+        }

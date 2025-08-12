@@ -127,7 +127,24 @@ class FuzzerConfig:
 
     def get_db_config(self) -> dict:
         """Returns the database connection dictionary."""
-        return self.get('database', {})
+        db_config = self.get('database', {})
+        
+        # Map config keys to expected DB executor keys
+        mapped_config = {}
+        if 'host' in db_config:
+            mapped_config['host'] = db_config['host']
+        if 'port' in db_config:
+            mapped_config['port'] = db_config['port']
+        if 'user' in db_config:
+            mapped_config['user'] = db_config['user']
+        if 'password' in db_config:
+            mapped_config['password'] = db_config['password']
+        if 'database' in db_config:
+            mapped_config['dbname'] = db_config['database']  # Map 'database' to 'dbname'
+        if 'schema_name' in db_config:
+            mapped_config['schema_name'] = db_config['schema_name']
+            
+        return mapped_config
 
     def __getitem__(self, key):
         """Allows dictionary-style access to the configuration."""
