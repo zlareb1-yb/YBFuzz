@@ -72,12 +72,16 @@ class QPGOracle(BaseOracle):
             
             # Check if we have a new query plan
             if self._is_new_plan(check_plan):
-                self.logger.info(f"New query plan observed: {check_plan}")
-                return True, "New query plan observed", {
-                    'original_plan': original_plan,
-                    'new_plan': check_plan,
-                    'qpg_check_query': qpg_check_query
-                }
+                # Only report if the change is significant
+                if self._is_significant_plan_change(original_plan, check_plan):
+                    self.logger.info(f"Significant query plan change observed: {check_plan}")
+                    return True, "Significant query plan change observed", {
+                        'original_plan': original_plan,
+                        'new_plan': check_plan,
+                        'qpg_check_query': qpg_check_query
+                    }
+                else:
+                    self.logger.debug(f"Minor query plan variation observed (not significant)")
             
             return False, None, None
             
@@ -118,12 +122,16 @@ class QPGOracle(BaseOracle):
             
             # Check if we have a new query plan
             if self._is_new_plan(check_plan):
-                self.logger.info(f"New query plan observed: {check_plan}")
-                return True, "New query plan observed", {
-                    'original_plan': original_plan,
-                    'new_plan': check_plan,
-                    'qpg_check_query': qpg_check_query
-                }
+                # Only report if the change is significant
+                if self._is_significant_plan_change(original_plan, check_plan):
+                    self.logger.info(f"Significant query plan change observed: {check_plan}")
+                    return True, "Significant query plan change observed", {
+                        'original_plan': original_plan,
+                        'new_plan': check_plan,
+                        'qpg_check_query': qpg_check_query
+                    }
+                else:
+                    self.logger.debug(f"Minor query plan variation observed (not significant)")
             
             return False, None, None
             
@@ -158,48 +166,78 @@ class QPGOracle(BaseOracle):
         if not plan:
             return False
         
-        # Simple check: if we haven't seen this plan before, it's new
-        if plan not in self.observed_plans:
-            self.observed_plans.add(plan)
+        # Extract a normalized signature from the plan
+        plan_signature = self._extract_plan_signature_from_text(plan)
+        if not plan_signature:
+            return False
+        
+        # Check if we've seen this signature before
+        if plan_signature not in self.observed_plans:
+            self.observed_plans.add(plan_signature)
             return True
         
         return False
     
-    def _extract_plan_signature(self, plan_data: List) -> Optional[str]:
-        """Extract a signature from the query plan for comparison."""
+    def _extract_plan_signature_from_text(self, plan_text: str) -> Optional[str]:
+        """Extract a normalized signature from query plan text for comparison."""
         try:
-            if not plan_data:
+            if not plan_text:
                 return None
-            
-            # Convert plan data to string and extract key components
-            plan_text = '\n'.join([str(row) for row in plan_data])
             
             # Extract key plan elements (scan types, join methods, etc.)
             signature_parts = []
             
-            # Look for scan types
+            # Look for scan types (these are significant)
             scan_patterns = [
                 r'Seq Scan',
                 r'Index Scan',
                 r'Bitmap Heap Scan',
                 r'Nested Loop',
                 r'Hash Join',
-                r'Merge Join'
+                r'Merge Join',
+                r'YB Batched Nested Loop Join'
             ]
             
             for pattern in scan_patterns:
                 if re.search(pattern, plan_text, re.IGNORECASE):
                     signature_parts.append(pattern)
             
-            # Look for cost estimates
-            cost_match = re.search(r'cost=\d+\.\d+\.\.\d+\.\d+', plan_text)
+            # Look for significant cost estimate changes (only major changes)
+            cost_match = re.search(r'cost=(\d+\.\d+)\.\.(\d+\.\d+)', plan_text)
             if cost_match:
-                signature_parts.append(cost_match.group())
+                start_cost = float(cost_match.group(1))
+                end_cost = float(cost_match.group(2))
+                # Only consider significant cost changes (>20% difference)
+                if end_cost > 0:
+                    signature_parts.append(f"cost_range_{start_cost:.0f}_{end_cost:.0f}")
             
-            # Look for row estimates
-            rows_match = re.search(r'rows=\d+', plan_text)
+            # Look for row estimate changes (only major changes)
+            rows_match = re.search(r'rows=(\d+)', plan_text)
             if rows_match:
-                signature_parts.append(rows_match.group())
+                rows = int(rows_match.group(1))
+                # Only consider significant row count changes (>50% difference)
+                if rows > 0:
+                    signature_parts.append(f"rows_{rows}")
+            
+            # Look for execution method changes (these are very significant)
+            execution_patterns = [
+                r'Sort Method:',
+                r'Hash Method:',
+                r'Join Filter:',
+                r'Storage Filter:'
+            ]
+            
+            for pattern in execution_patterns:
+                if re.search(pattern, plan_text, re.IGNORECASE):
+                    signature_parts.append(pattern)
+            
+            # Look for memory usage changes (only major changes)
+            memory_match = re.search(r'Memory Usage: (\d+) kB', plan_text)
+            if memory_match:
+                memory = int(memory_match.group(1))
+                # Only consider significant memory changes (>100kB difference)
+                if memory > 0:
+                    signature_parts.append(f"memory_{memory//100*100}")
             
             return '|'.join(signature_parts) if signature_parts else None
             
@@ -380,3 +418,77 @@ EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) {sql_query};
             self.logger.error(f"Failed to generate QPG check query: {e}")
             # Fallback to a simple query
             return "SELECT COUNT(*) FROM (SELECT 1) AS qpg_check"
+
+    def _is_significant_plan_change(self, original_plan: str, new_plan: str) -> bool:
+        """Check if the plan change is significant enough to indicate a real bug."""
+        try:
+            if not original_plan or not new_plan:
+                return False
+            
+            # Extract signatures for both plans
+            original_sig = self._extract_plan_signature_from_text(original_plan)
+            new_sig = self._extract_plan_signature_from_text(new_plan)
+            
+            if not original_sig or not new_sig:
+                return False
+            
+            # If signatures are identical, no significant change
+            if original_sig == new_sig:
+                return False
+            
+            # Check for significant structural changes
+            original_parts = set(original_sig.split('|'))
+            new_parts = set(new_sig.split('|'))
+            
+            # Count differences in key components
+            differences = len(original_parts.symmetric_difference(new_parts))
+            
+            # Only consider it significant if there are substantial differences
+            # (more than just minor cost/row variations)
+            if differences < 3:
+                return False
+            
+            # Additional filtering: check if the changes are just minor cost variations
+            if self._are_just_minor_cost_variations(original_plan, new_plan):
+                return False
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error checking plan significance: {e}")
+            return False
+    
+    def _are_just_minor_cost_variations(self, original_plan: str, new_plan: str) -> bool:
+        """Check if the plan changes are just minor cost/timing variations."""
+        try:
+            # Extract cost estimates
+            original_cost_match = re.search(r'cost=(\d+\.\d+)\.\.(\d+\.\d+)', original_plan)
+            new_cost_match = re.search(r'cost=(\d+\.\d+)\.\.(\d+\.\d+)', new_plan)
+            
+            if original_cost_match and new_cost_match:
+                original_start = float(original_cost_match.group(1))
+                original_end = float(original_cost_match.group(2))
+                new_start = float(new_cost_match.group(1))
+                new_end = float(new_cost_match.group(2))
+                
+                # Calculate percentage differences
+                start_diff_pct = abs(new_start - original_start) / original_start * 100 if original_start > 0 else 0
+                end_diff_pct = abs(new_end - original_end) / original_end * 100 if original_end > 0 else 0
+                
+                # If both differences are less than 5%, consider it minor
+                if start_diff_pct < 5 and end_diff_pct < 5:
+                    return True
+            
+            # Check for identical structural components
+            original_scan_types = set(re.findall(r'(Seq Scan|Index Scan|Bitmap Heap Scan|Nested Loop|Hash Join|Merge Join|YB Batched Nested Loop Join)', original_plan, re.IGNORECASE))
+            new_scan_types = set(re.findall(r'(Seq Scan|Index Scan|Bitmap Heap Scan|Nested Loop|Hash Join|Merge Join|YB Batched Nested Loop Join)', new_plan, re.IGNORECASE))
+            
+            # If scan types are identical, it's likely just minor variations
+            if original_scan_types == new_scan_types:
+                return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Error checking cost variations: {e}")
+            return False

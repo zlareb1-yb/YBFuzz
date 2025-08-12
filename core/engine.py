@@ -253,7 +253,7 @@ class FuzzerEngine:
                 ddl_stmt = self.generator.generate_statement_of_type('ddl_stmt')
                 if ddl_stmt:
                     sql = ddl_stmt.to_sql()
-                    self.db_executor.execute_admin_command(sql)
+                    self.db_executor.execute_admin(sql)
                     self.stats['queries_executed'] += 1
             
             # Refresh catalog after DDL changes
@@ -298,15 +298,24 @@ class FuzzerEngine:
             self.logger.error(f"Error executing validation SELECT: {e}")
     
     def _check_query_with_oracles(self, query: str, result: Any) -> None:
-        """Check a query using all available oracles."""
+        """Check the query with all enabled oracles."""
         for oracle in self.oracles:
             try:
+                # Log which oracle is testing which query
+                oracle_name = oracle.get_oracle_name()
+                self.logger.info(f"🔍 Testing query with {oracle_name}: {query[:100]}{'...' if len(query) > 100 else ''}")
+                
+                # Check for bugs using the correct method signature
                 bug_found, bug_description, bug_context = oracle.check_for_bugs(query)
+                
                 if bug_found:
-                    self._report_bug(query, bug_description, bug_context, oracle.get_oracle_name())
+                    self.logger.warning(f"🚨 BUG DETECTED by {oracle_name}: {bug_description}")
+                    self._report_bug(query, bug_description, bug_context, oracle_name)
+                else:
+                    self.logger.debug(f"✅ {oracle_name}: No bugs detected in query")
                     
             except Exception as e:
-                self.logger.error(f"Error in oracle {oracle.get_oracle_name()}: {e}")
+                self.logger.error(f"Error checking query with {oracle.get_oracle_name()}: {e}")
     
     def _report_bug(self, query: str, bug_description: str, bug_context: Any, oracle_name: str) -> None:
         """Report a detected bug."""
@@ -325,16 +334,39 @@ class FuzzerEngine:
             reproduction = self._generate_reproduction_script(query, bug_description, bug_context)
             self.logger.warning(f"Reproduction: {reproduction}")
             
-            # Report to bug reporter
-            self.db_executor.bug_reporter.report_bug({
-                'oracle': oracle_name,
-                'description': bug_description,
-                'query': query,
-                'context': bug_context
-            })
+            # Report to bug reporter with correct parameters
+            bug_type = self._determine_bug_type(oracle_name, bug_description)
+            self.db_executor.bug_reporter.report_bug(
+                bug_type=bug_type,
+                description=bug_description,
+                query=query,
+                error=str(bug_context),
+                reproduction_query=reproduction
+            )
             
         except Exception as e:
             self.logger.error(f"Error reporting bug: {e}")
+    
+    def _determine_bug_type(self, oracle_name: str, description: str) -> str:
+        """Determine the bug type based on oracle name and description."""
+        oracle_name_lower = oracle_name.lower()
+        
+        if 'tlp' in oracle_name_lower:
+            return 'tlp'
+        elif 'qpg' in oracle_name_lower:
+            return 'qpg'
+        elif 'norec' in oracle_name_lower:
+            return 'norec'
+        elif 'pqs' in oracle_name_lower:
+            return 'pqs'
+        elif 'cert' in oracle_name_lower:
+            return 'cert'
+        elif 'dqp' in oracle_name_lower:
+            return 'dqp'
+        elif 'coddtest' in oracle_name_lower:
+            return 'coddtest'
+        else:
+            return 'logical'
     
     def _generate_reproduction_script(self, query: str, bug_description: str, bug_context: Any) -> str:
         """Generate a reproduction script for the bug."""

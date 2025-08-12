@@ -1,6 +1,6 @@
 # Manages all configuration for the fuzzer, providing a single source of truth.
 # This optimized version includes robust validation, clearer merging logic,
-# and dynamic handling of CLI overrides for a professional-grade experience.
+# and dynamic handling of CLI overrides for a production-ready experience.
 
 import yaml
 import random

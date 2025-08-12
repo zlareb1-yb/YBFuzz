@@ -14,7 +14,7 @@ def main():
     """Parses arguments, sets up logging, and starts the fuzzer."""
     # Use a formatter that shows default values in help text
     parser = argparse.ArgumentParser(
-        description="YBFuzz: A Professional Hybrid Fuzzing Framework for YugabyteDB",
+        description="YBFuzz: A YugabyteDB Hybrid Fuzzing Framework",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
 

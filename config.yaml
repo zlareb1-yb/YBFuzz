@@ -1,5 +1,5 @@
 # YBFuzz Configuration File
-# World-class Staff SDET database fuzzer configuration
+# YugabyteDB fuzzer configuration
 
 # Database Configuration
 database:
@@ -21,7 +21,7 @@ fuzzing:
   seed_corpus_size: 100
   evolved_corpus_size: 50
   
-  # Advanced fuzzing strategies
+  # Fuzzing strategies
   strategies:
     grammar_based: true
     mutation_based: true
@@ -29,7 +29,7 @@ fuzzing:
     feedback_driven: true
     adaptive_mutation: true
 
-# Oracle Configuration - Advanced Bug Detection
+# Oracle Configuration - Bug Detection Techniques
 oracles:
   # Core Oracles (Always Enabled)
   tlp:
@@ -82,7 +82,7 @@ generation:
   max_recursion_depth: 5
   max_query_length: 1000
   
-  # Advanced generation strategies
+  # Generation strategies
   strategies:
     context_aware: true
     schema_aware: true
@@ -100,23 +100,9 @@ generation:
 mutation:
   # Mutation strategies
   strategies:
-    - "column_substitution"
-    - "operator_mutation"
-    - "clause_reordering"
-    - "type_conversion"
-    - "null_handling"
-    - "edge_case_injection"
-    
-  # Mutation parameters
-  parameters:
-    mutation_rate: 0.3
-    max_mutations_per_query: 3
-    preserve_semantics: true
-    
-  # Advanced mutation techniques
-  advanced:
-    semantic_preservation: true
-    constraint_aware_mutation: true
+    grammar_mutation: true
+    semantic_mutation: true
+    structural_mutation: true
     feedback_driven_mutation: true
 
 # Bug Reporting Configuration
@@ -142,8 +128,8 @@ bug_reporting:
     include_statistics: true
     include_metadata: true
     
-  # Advanced reporting
-  advanced:
+  # Reporting features
+  features:
     bug_clustering: true
     duplicate_detection: true
     severity_classification: true
@@ -158,8 +144,8 @@ performance:
     parallel_execution: true
     connection_pooling: true
     
-  # Optimization
-  optimization:
+  # Performance features
+  features:
     query_planning: true
     result_caching: true
     adaptive_execution: true
@@ -181,8 +167,8 @@ logging:
     - "file"
     - "syslog"
     
-  # Advanced logging
-  advanced:
+  # Logging features
+  features:
     structured_logging: true
     log_rotation: true
     log_compression: true
@@ -216,35 +202,3 @@ testing:
     statement_coverage: true
     branch_coverage: true
     oracle_coverage: true
-    
-  # Test validation
-  validation:
-    result_verification: true
-    performance_baseline: true
-    regression_detection: true
-
-# Advanced Features
-advanced:
-  # Machine Learning Integration
-  ml_integration:
-    enabled: false
-    model_path: "models/"
-    training_data: "data/training/"
-    
-  # AI-Powered Generation
-  ai_generation:
-    enabled: false
-    model_type: "transformer"
-    context_window: 1024
-    
-  # Distributed Fuzzing
-  distributed:
-    enabled: false
-    worker_nodes: 4
-    coordination: "redis"
-    
-  # Real-time Analysis
-  real_time:
-    enabled: false
-    streaming: true
-    alerting: true

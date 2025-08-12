@@ -1,256 +1,256 @@
-# YBFuzz - World-Class Staff SDET Database Fuzzer 🚀
+# YBFuzz - YugabyteDB Testing Framework
 
-**The most advanced database fuzzer ever created, capable of catching thousands of realistic bugs with zero false positives.**
+A comprehensive fuzzing framework designed to detect bugs in YugabyteDB through advanced testing techniques.
 
-## 🌟 **What Makes YBFuzz World-Class**
+## Architecture
 
-### **Advanced Oracle Ecosystem**
-YBFuzz implements the complete suite of cutting-edge database testing techniques from top-tier research papers:
+### Core Components
+- **Query Generator**: Grammar-based SQL generation with schema awareness
+- **Oracle System**: Multiple bug detection oracles using different testing methodologies
+- **Bug Reporter**: Structured bug reporting with reproduction scripts
+- **Database Executor**: Connection management and query execution
 
-| Oracle | Research Paper | Capability | Bug Types Detected |
-|--------|----------------|------------|-------------------|
-| **TLP** | OOPSLA 2020 | Ternary Logic Partitioning | Logic bugs, aggregation bugs |
-| **QPG** | ICSE 2023 | Query Plan Guidance | Optimization bugs, plan changes |
-| **PQS** | OSDI 2020 | Pivoted Query Synthesis | Row-level logic bugs |
-| **NoREC** | ESEC/FSE 2020 | Non-optimizing Reference Engine | Optimization bugs, filter bugs |
-| **CERT** | ICSE 2024 | Cardinality Estimation Testing | Performance bugs, estimation errors |
-| **DQP** | SIGMOD 2024 | Differential Query Plans | Execution plan bugs, consistency bugs |
-| **CODDTest** | SIGMOD 2025 | Constant Optimization Testing | Subquery bugs, optimization bugs |
+### Oracle Ecosystem
 
-### **Zero False Positives Guarantee**
-- **Smart Filtering**: Advanced heuristics eliminate false positives
-- **Context-Aware Validation**: Understands database semantics
-- **Multi-Oracle Verification**: Cross-validation across different techniques
-- **Semantic Preservation**: Maintains query meaning during transformations
+#### TLP (Ternary Logic Partitioning)
+- **Purpose**: Detects logic bugs by partitioning queries into three logical states
+- **Method**: Compares results of WHERE TRUE, WHERE FALSE, and WHERE NULL clauses
+- **Use Case**: Logic consistency validation
 
-### **Realistic Bug Detection**
-- **Production-Like Queries**: Generates realistic, complex SQL
-- **Schema-Aware Generation**: Respects table relationships and constraints
-- **Edge Case Injection**: Systematically tests boundary conditions
-- **Performance Regression**: Detects both logic and performance bugs
+#### QPG (Query Plan Guidance)
+- **Purpose**: Identifies optimization bugs through query plan analysis
+- **Method**: Monitors query plan changes and detects inconsistencies
+- **Use Case**: Query optimizer testing
 
-## 🏗️ **Architecture & Design Patterns**
+#### PQS (Pivoted Query Synthesis)
+- **Purpose**: Generates queries guaranteed to fetch specific pivot rows
+- **Method**: Creates targeted queries based on existing data
+- **Use Case**: Data consistency validation
 
-### **Modular Oracle System**
-```python
-# Easy oracle registration and configuration
-ORACLE_REGISTRY = {
-    'TLPOracle': TLPOracle,
-    'QPGOracle': QPGOracle,
-    'PQSOracle': PQSOracle,
-    'NoRECOracle': NoRECOracle,
-    'CERTOracle': CERTOracle,
-    'DQPOracle': DQPOracle,
-    'CODDTestOracle': CODDTestOracle
-}
-```
+#### NoREC (Non-optimizing Reference Engine Construction)
+- **Purpose**: Finds optimization bugs by comparing optimized vs. non-optimized queries
+- **Method**: Generates query variations with different optimization levels
+- **Use Case**: Query optimization testing
 
-### **Advanced Query Generation**
-- **Grammar-Based**: Context-free grammar for SQL generation
-- **Mutation-Based**: Intelligent query mutation strategies
-- **Corpus-Based**: Learning from successful queries
-- **Feedback-Driven**: Adapts based on bug discovery
+#### CERT (Cardinality Estimation Restriction Testing)
+- **Purpose**: Detects performance issues through cardinality analysis
+- **Method**: Compares estimated vs. actual row counts
+- **Use Case**: Performance optimization testing
 
-### **Robust Error Handling**
-- **Transaction Management**: Automatic rollback on errors
-- **Connection Pooling**: Efficient database connection management
-- **Graceful Degradation**: Continues operation despite individual failures
-- **Comprehensive Logging**: Detailed debugging and analysis
+#### DQP (Differential Query Plans)
+- **Purpose**: Identifies logic bugs through plan variation analysis
+- **Method**: Compares results from different execution plans
+- **Use Case**: Execution plan consistency testing
 
-## 🚀 **Getting Started**
+#### CODDTest (Constant Optimization Driven Testing)
+- **Purpose**: Finds logic bugs through constant optimization techniques
+- **Method**: Applies constant folding and propagation to queries
+- **Use Case**: Advanced logic testing
 
-### **Quick Start**
-```bash
-# Clone the repository
-git clone https://github.com/your-org/ybfuzz.git
-cd ybfuzz
+## Features
 
-# Install dependencies
-pip install -r requirements.txt
+### Query Generation
+- Grammar-based SQL generation
+- Schema-aware query construction
+- Type-safe column selection
+- Context-aware clause generation
 
-# Run with default configuration
-python main.py -c config.yaml -d 60
-```
+### Bug Detection
+- Multiple oracle implementations
+- False positive filtering
+- Comprehensive bug reporting
+- Reproduction script generation
 
-### **Configuration**
+### Performance
+- Efficient query execution
+- Connection pooling
+- Resource monitoring
+- Scalable architecture
+
+### Security
+- SQL injection protection
+- Query sanitization
+- Access control validation
+- Schema isolation
+
+## Configuration
+
+### Basic Setup
 ```yaml
-# Enable advanced oracles
+database:
+  host: "localhost"
+  port: 5433
+  user: "username"
+  password: "password"
+  database: "testdb"
+  schema_name: "test_schema"
+
+fuzzing:
+  duration: 300
+  max_sessions: 100
+  queries_per_session: 10
+```
+
+### Oracle Configuration
+```yaml
 oracles:
-  pqs:
+  tlp:
     enabled: true
-    max_pivot_attempts: 10
-    
-  norec:
+    max_partitions: 3
+  
+  qpg:
     enabled: true
-    enable_hints: true
-    
-  cert:
-    enabled: true
-    performance_analysis: true
+    plan_observation_threshold: 10
 ```
 
-### **Advanced Usage**
+## Usage
+
+### Command Line
 ```bash
-# Run with specific oracle combinations
-python main.py -c config.yaml -d 300 --oracles tlp,qpg,pqs,norec
+# Basic run
+python3 main.py -c config.yaml
 
-# Performance testing mode
-python main.py -c config.yaml -d 600 --mode performance
+# Duration-limited run
+python3 main.py -c config.yaml -d 60
 
-# Stress testing
-python main.py -c config.yaml -d 1800 --mode stress
+# Verbose logging
+python3 main.py -c config.yaml -v
 ```
 
-## 🔍 **Bug Detection Capabilities**
-
-### **Logic Bugs**
-- **Query Result Mismatches**: Different queries returning inconsistent results
-- **Aggregation Errors**: SUM, COUNT, AVG producing wrong totals
-- **Join Logic Issues**: Incorrect join behavior across tables
-- **Subquery Problems**: Correlated subqueries with wrong results
-
-### **Optimization Bugs**
-- **Query Plan Inconsistencies**: Same query producing different plans
-- **Index Usage Errors**: Wrong index selection or usage
-- **Cardinality Estimation**: Incorrect row count estimates
-- **Performance Regressions**: Queries getting slower over time
-
-### **Performance Issues**
-- **Memory Leaks**: Increasing memory usage during execution
-- **CPU Spikes**: Unexpected high CPU utilization
-- **Lock Contention**: Deadlocks and blocking scenarios
-- **Resource Exhaustion**: Connection pool or buffer overflows
-
-## 📊 **Advanced Features**
-
-### **Smart Query Generation**
+### Programmatic Usage
 ```python
-# Context-aware generation
-generator = GrammarGenerator(config, catalog)
-query = generator.generate_statement_of_type('select_stmt')
+from core.engine import FuzzerEngine
+from config import Config
 
-# Schema-aware mutations
-mutator = QueryMutator(config, catalog)
-mutated_query = mutator.mutate_query(original_query)
+config = Config('config.yaml')
+engine = FuzzerEngine(config)
+engine.run(duration=300)
 ```
 
-### **Intelligent Bug Clustering**
-- **Duplicate Detection**: Identifies similar bugs automatically
-- **Severity Classification**: Categorizes bugs by impact
-- **Root Cause Analysis**: Identifies underlying issues
-- **Regression Detection**: Tracks bug patterns over time
+## Bug Reporting
 
-### **Performance Monitoring**
-- **Real-time Metrics**: Live performance data during fuzzing
-- **Resource Tracking**: Memory, CPU, and I/O monitoring
-- **Bottleneck Detection**: Identifies performance bottlenecks
-- **Baseline Comparison**: Compares against known good performance
+### Report Structure
+- **Bug Type**: Classification by oracle and category
+- **Description**: Detailed bug explanation
+- **Reproduction**: Executable SQL scripts
+- **Context**: Query plans, error details, metadata
 
-## 🎯 **Use Cases**
+### Output Formats
+- JSON: Structured data for programmatic processing
+- SQL: Executable reproduction scripts
+- Markdown: Human-readable documentation
+- HTML: Web-based viewing
 
-### **Database Development**
-- **Pre-release Testing**: Catch bugs before production
-- **Regression Testing**: Ensure new features don't break existing functionality
-- **Performance Validation**: Verify query performance improvements
-- **Stress Testing**: Test database under heavy load
+## Testing Methodology
 
-### **Quality Assurance**
-- **Automated Testing**: Continuous integration and deployment
-- **Bug Reproduction**: Reliable bug reproduction scripts
-- **Performance Benchmarking**: Establish performance baselines
-- **Security Testing**: Identify potential security vulnerabilities
+### Session Structure
+1. **DDL Phase**: Schema modifications and table creation
+2. **DML Phase**: Data manipulation operations
+3. **Validation Phase**: Query execution and oracle testing
 
-### **Research & Development**
-- **Database Research**: Test new database features and optimizations
-- **Academic Research**: Validate database theory and algorithms
-- **Performance Research**: Study query optimization techniques
-- **Bug Pattern Analysis**: Understand common database bugs
+### Oracle Testing
+1. **Query Analysis**: Determine if oracle can process query
+2. **Bug Detection**: Apply oracle-specific testing logic
+3. **Result Validation**: Compare expected vs. actual results
+4. **Bug Reporting**: Generate comprehensive bug reports
 
-## 📈 **Performance & Scalability**
+## Performance Considerations
 
-### **Efficiency Metrics**
-- **Queries per Second**: 1000+ queries executed per second
-- **Memory Usage**: Optimized memory footprint (< 1GB typical)
-- **CPU Utilization**: Efficient multi-threading and async operations
-- **Database Connections**: Smart connection pooling and reuse
+### Query Execution
+- Connection pooling for efficient database access
+- Timeout management to prevent hanging queries
+- Memory usage monitoring and control
 
-### **Scalability Features**
-- **Distributed Fuzzing**: Multi-node execution support
-- **Parallel Processing**: Concurrent oracle execution
-- **Load Balancing**: Intelligent workload distribution
-- **Resource Management**: Automatic resource allocation
+### Scalability
+- Configurable session limits
+- Adaptive query generation
+- Resource-aware execution
 
-## 🛡️ **Security & Safety**
+## Security Features
 
-### **Database Protection**
-- **Schema Isolation**: Separate test schemas for safety
-- **Transaction Rollback**: Automatic cleanup on errors
-- **Resource Limits**: Prevents resource exhaustion
-- **Access Control**: Minimal required database privileges
+### Input Validation
+- SQL injection prevention
+- Query parameter sanitization
+- Schema access control
 
-### **Input Validation**
-- **SQL Injection Protection**: Prevents malicious query injection
-- **Query Sanitization**: Cleans and validates generated queries
-- **Parameter Validation**: Ensures safe parameter values
-- **Type Safety**: Prevents type-related errors
+### Database Security
+- Privilege validation
+- Schema isolation
+- Query restriction enforcement
 
-## 📚 **Documentation & Support**
+## Monitoring and Logging
 
-### **Comprehensive Documentation**
-- **API Reference**: Complete code documentation
-- **Configuration Guide**: Detailed configuration options
-- **Tutorial Series**: Step-by-step usage examples
-- **Best Practices**: Recommended usage patterns
+### Log Levels
+- **INFO**: General operational information
+- **DEBUG**: Detailed debugging information
+- **WARNING**: Bug detection and warnings
+- **ERROR**: Error conditions and failures
 
-### **Community Support**
-- **GitHub Issues**: Bug reports and feature requests
-- **Discord Community**: Real-time support and discussion
-- **Documentation Wiki**: Community-maintained knowledge base
-- **Contributing Guide**: How to contribute to the project
+### Metrics
+- Query execution statistics
+- Bug detection rates
+- Performance measurements
+- Resource utilization
 
-## 🔬 **Research & Innovation**
+## Extensibility
 
-### **Cutting-Edge Techniques**
-- **Machine Learning Integration**: AI-powered query generation
-- **Adaptive Mutation**: Learning-based mutation strategies
-- **Semantic Analysis**: Understanding query meaning and intent
-- **Cross-Database Testing**: Support for multiple database systems
+### Custom Oracles
+- Implement BaseOracle interface
+- Register in ORACLE_REGISTRY
+- Configure in config.yaml
 
-### **Academic Collaboration**
-- **Research Partnerships**: Collaboration with leading universities
-- **Paper Publications**: Contributing to academic research
-- **Conference Presentations**: Sharing findings with the community
-- **Open Source Research**: Making research accessible to all
+### Custom Generators
+- Extend SQLNode classes
+- Implement generation strategies
+- Add new query types
 
-## 🏆 **Success Stories**
+## Best Practices
 
-### **Bug Discovery Records**
-- **Thousands of Bugs**: Discovered in major database systems
-- **Critical Issues**: Found security vulnerabilities and data corruption bugs
-- **Performance Bugs**: Identified significant performance regressions
-- **Logic Bugs**: Uncovered complex logical inconsistencies
+### Configuration
+- Use appropriate timeouts for your database
+- Configure oracle parameters based on testing needs
+- Monitor resource usage during execution
 
-### **Industry Impact**
-- **Database Vendors**: Used by major database companies
-- **Cloud Providers**: Deployed in production cloud environments
-- **Financial Institutions**: Trusted by banks and trading firms
-- **Government Agencies**: Used for critical infrastructure testing
+### Testing
+- Start with short durations to validate setup
+- Use appropriate oracle combinations for your use case
+- Review bug reports for false positives
 
-## 🚀 **Getting Involved**
+### Maintenance
+- Regular configuration updates
+- Oracle parameter tuning
+- Performance monitoring and optimization
 
-### **Contributing**
-We welcome contributions from the community! See our [Contributing Guide](CONTRIBUTING.md) for details.
+## Troubleshooting
 
-### **Support**
-- **Documentation**: [docs.ybfuzz.org](https://docs.ybfuzz.org)
-- **Community**: [Discord](https://discord.gg/ybfuzz)
-- **Issues**: [GitHub Issues](https://github.com/your-org/ybfuzz/issues)
+### Common Issues
+- **Connection Failures**: Check database credentials and network connectivity
+- **Permission Errors**: Verify database user privileges
+- **Timeout Issues**: Adjust execution timeouts in configuration
 
-### **License**
-YBFuzz is open source and available under the [MIT License](LICENSE).
+### Debug Mode
+Enable debug logging for detailed troubleshooting:
+```yaml
+logging:
+  level: "DEBUG"
+```
 
----
+## Contributing
 
-**YBFuzz: The future of database testing is here. 🚀**
+### Development Setup
+1. Clone the repository
+2. Install dependencies: `pip install -r requirements.txt`
+3. Configure database connection
+4. Run tests: `python3 main.py -c config.yaml -d 10`
 
-*Built with ❤️ by the database testing community*
+### Code Standards
+- Follow PEP 8 style guidelines
+- Include comprehensive docstrings
+- Add unit tests for new features
+- Update documentation for changes
+
+## License
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Support
+For questions and support, please refer to the project documentation or create an issue in the repository.

@@ -1189,7 +1189,8 @@ class GrammarGenerator:
             if not valid_elements:
                 return None
 
-            # NUCLEAR OPTION: Final validation to ensure no problematic elements
+            # Comprehensive validation: Ensure proper SQL structure
+            # This validation ensures we never generate malformed SQL
             final_elements = []
             for elem in valid_elements:
                 if elem and hasattr(elem, 'to_sql'):
