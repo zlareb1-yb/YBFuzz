@@ -5,12 +5,15 @@
 
 import logging
 import random
+import re
 import time
+from typing import Union, Optional, List, Tuple, Any
+from dataclasses import dataclass, field
+from abc import ABC, abstractmethod
+from utils.db_executor import Column, Table, Catalog, DiscoveredFunction
 from config import FuzzerConfig
-from utils.db_executor import Catalog, Table, Column, DiscoveredFunction
 
 # --- Rich Abstract Syntax Tree (AST) Nodes ---
-from abc import ABC, abstractmethod
 class SQLNode(ABC):
     def __init__(self): self.parent = None; self.children = []
     def add_child(self, node):
@@ -523,7 +526,7 @@ class UpdateAssignmentNode(SQLNode):
 from dataclasses import dataclass, field
 @dataclass
 class GenerationContext:
-    catalog: Catalog; config: FuzzerConfig; recursion_depth: dict[str, int] = field(default_factory=dict)
+    catalog: Catalog | None = None; config: FuzzerConfig | None = None; recursion_depth: dict[str, int] = field(default_factory=dict)
     current_table: Table | None = None; grouping_columns: list[Column] = field(default_factory=list)
     expected_type: str | None = None; insert_columns: list[Column] = field(default_factory=list)
 
@@ -532,94 +535,44 @@ class GrammarGenerator:
         self.grammar = grammar; self.config = config; self.catalog = catalog
         self.logger = logging.getLogger(self.__class__.__name__)
 
-    def generate_statement_of_type(self, statement_type: str) -> SQLNode | None:
-        context = GenerationContext(catalog=self.catalog, config=self.config)
-        # Set a current table for context-aware generation
-        context.current_table = self.catalog.get_random_table()
+    def generate_statement_of_type(self, stmt_type: str, context: Optional[GenerationContext] = None) -> Optional[SQLNode]:
+        """Generate a SQL statement of the specified type."""
+        if context is None:
+            context = GenerationContext()
         
-        # Debug: Log the selected table
-        if context.current_table:
-            self.logger.debug(f"Selected table for generation: {context.current_table.name}")
-            self.logger.debug(f"Table columns: {[col.name for col in context.current_table.columns]}")
-        else:
-            self.logger.warning("No table available for generation")
-            
-        return self._generate_rule(statement_type, context)
+        try:
+            if stmt_type == 'select_stmt':
+                # Use advanced YugabyteDB queries for maximum bug detection
+                query_type = random.random()
+                if query_type < 0.25:  # 25% chance for distributed YB tests
+                    return self.generate_yb_distributed_tests(context)
+                elif query_type < 0.5:  # 25% chance for advanced YB queries
+                    return self.generate_advanced_yb_queries(context)
+                elif query_type < 0.7:  # 20% chance for YB data type tests
+                    return self.generate_yb_data_type_tests(context)
+                elif query_type < 0.85:  # 15% chance for YB internals tests
+                    return self.generate_yugabytedb_internals_test(context)
+                elif query_type < 0.95:  # 10% chance for complex queries
+                    return self.generate_complex_select(context)
+                else:  # 5% chance for basic queries
+                    return self.generate_select(context)
+            elif stmt_type == 'insert_stmt':
+                return self.generate_insert(context)
+            elif stmt_type == 'update_stmt':
+                return self.generate_update(context)
+            elif stmt_type == 'delete_stmt':
+                return self.generate_delete(context)
+            elif stmt_type == 'ddl_stmt':
+                return self.generate_ddl(context)
+            else:
+                self.logger.warning(f"Unknown statement type: {stmt_type}")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"Error generating {stmt_type}: {e}")
+            return None
 
-    def _generate_rule(self, rule_name: str, context: GenerationContext) -> SQLNode | None:
-        """Generate a node for a specific rule."""
-        # Handle terminal rules first
-        if rule_name in ['SELECT', 'FROM', 'WHERE', 'GROUP BY', 'HAVING', 'ORDER BY', 'LIMIT', 'OFFSET',
-                         'INSERT', 'INTO', 'VALUES', 'UPDATE', 'SET', 'DELETE', 'CREATE', 'TABLE', 'DROP',
-                         'AS', 'ON', 'INNER JOIN', 'LEFT JOIN', 'RIGHT JOIN', 'FULL JOIN', 'IN', 'LIKE', 'IS',
-                         'NULL', 'NOT', 'EXISTS', 'AND', 'OR', 'TRUE', 'FALSE', 'UNKNOWN', 'CURRENT_TIMESTAMP',
-                         'CURRENT_DATE', 'NOW', 'INTERVAL', 'TIMESTAMP', 'YEAR', 'MONTH', 'DAY', 'HOUR', 'MINUTE',
-                         'SECOND', 'CHAR', 'VARCHAR', 'TEXT', 'CHARACTER VARYING', 'SMALLINT', 'INTEGER', 'INT',
-                         'BIGINT', 'DECIMAL', 'NUMERIC', 'REAL', 'DOUBLE PRECISION', 'SERIAL', 'BIGSERIAL',
-                         'DATE', 'TIME', 'TIMESTAMP WITH TIME ZONE', 'BOOLEAN', 'BOOL', 'JSON', 'JSONB', 'UUID',
-                         'public', 'information_schema', 'pg_catalog', 'DISTINCT', 'COALESCE', 'NULLIF', 'GREATEST',
-                         'LEAST', 'EXTRACT', 'DATE_TRUNC', 'TO_CHAR', 'TO_DATE', 'ROW_NUMBER', 'RANK', 'DENSE_RANK',
-                         'LAG', 'LEAD', 'FIRST_VALUE', 'LAST_VALUE', 'STRING_AGG', 'ARRAY_AGG', 'COUNT', 'SUM',
-                         'AVG', 'MIN', 'MAX', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'UNION', 'UNION ALL',
-                         'INTERSECT', 'EXCEPT', 'WITH', 'OVER', 'PARTITION BY', 'RANGE', 'ROWS', 'UNBOUNDED PRECEDING',
-                         'CURRENT ROW', 'UNBOUNDED FOLLOWING', 'PRECEDING', 'FOLLOWING', 'FOR', 'UPDATE', 'SHARE',
-                         'KEY SHARE', 'NO KEY UPDATE', 'OF', 'NOWAIT', 'SKIP LOCKED', '/*+', 'LEADER_LOCAL',
-                         'LEADER_READ', 'LEADER_WRITE', 'PREFER_LOCAL', 'PREFER_REMOTE', 'RETURNING', '(', ')',
-                         '[', ']', '.', ',', ';', "'", '"', '\\', '$', '+', '-', '*', '/', '%', '=', '<>', '<',
-                         '<=', '>', '>=', '*']:
-            return RawSQL(rule_name)
-        
-        # Handle specific rule types based on the new BNF grammar
-        if rule_name == 'statement':
-            # Choose a random statement type
-            statement_types = ['select_stmt', 'insert_stmt', 'update_stmt', 'delete_stmt', 'create_table_stmt', 'drop_table_stmt']
-            chosen_type = random.choice(statement_types)
-            return self._generate_rule(chosen_type, context)
-        
-        if rule_name == 'select_stmt':
-            # Generate a SELECT statement
-            return self._generate_select_statement(context)
-        
-        if rule_name == 'insert_stmt':
-            # Generate an INSERT statement
-            return self._generate_insert_statement(context)
-        
-        if rule_name == 'update_stmt':
-            # Generate an UPDATE statement
-            return self._generate_update_statement(context)
-        
-        if rule_name == 'delete_stmt':
-            # Generate a DELETE statement
-            return self._generate_delete_statement(context)
-        
-        if rule_name == 'create_table_stmt':
-            # Generate a CREATE TABLE statement
-            return self._generate_create_table_statement(context)
-        
-        if rule_name == 'drop_table_stmt':
-            # Generate a DROP TABLE statement
-            return self._generate_drop_table_statement(context)
-        
-        # Handle other rules by delegating to existing methods
-        if rule_name == 'aggregate_function':
-            return self._generate_aggregate_function(context)
-        
-        if rule_name == 'where_clause':
-            return self._generate_where_clause(context)
-        
-        if rule_name == 'group_by_clause':
-            return self._generate_group_by_clause(context)
-        
-        if rule_name == 'order_by_clause':
-            return self._generate_order_by_clause(context)
-        
-        if rule_name == 'limit_clause':
-            return self._generate_limit_clause(context)
-        
-        # For unknown rules, return None to let the caller handle it
-        return None
-    
-    def _generate_select_statement(self, context: GenerationContext) -> SelectNode:
+    def generate_select(self, context: GenerationContext) -> SelectNode:
         """Generate a SELECT statement."""
         # Ensure we have a consistent table for this statement
         if not context.current_table:
@@ -672,22 +625,22 @@ class GrammarGenerator:
         # Generate WHERE clause (optional)
         where_clause = None
         if random.random() < 0.7 and context.current_table:  # 70% chance
-            where_clause = self._generate_where_clause(context)
+            where_clause = self.generate_where_clause(context)
         
         # Generate GROUP BY clause (optional)
         group_by_clause = None
         if random.random() < 0.3 and context.current_table:  # 30% chance
-            group_by_clause = self._generate_group_by_clause(context)
+            group_by_clause = self.generate_group_by_clause(context)
         
         # Generate ORDER BY clause (optional)
         order_by_clause = None
         if random.random() < 0.4:  # 40% chance
-            order_by_clause = self._generate_order_by_clause(context)
+            order_by_clause = self.generate_order_by_clause(context)
         
         # Generate LIMIT clause (optional)
         limit_clause = None
         if random.random() < 0.5:  # 50% chance
-            limit_clause = self._generate_limit_clause(context)
+            limit_clause = self.generate_limit_clause(context)
         
         # Create SelectNode with the correct parameters
         # Note: SelectNode constructor doesn't support order_by_clause directly
@@ -696,7 +649,7 @@ class GrammarGenerator:
         columns_node = SequenceNode(columns, separator=", ")
         return SelectNode(columns_node, table, where_clause, group_by_clause, limit_clause)
     
-    def _generate_insert_statement(self, context: GenerationContext) -> InsertNode:
+    def generate_insert(self, context: GenerationContext) -> InsertNode:
         """Generate an INSERT statement."""
         if not context.current_table:
             # Fallback to a simple INSERT
@@ -731,7 +684,7 @@ class GrammarGenerator:
                         SequenceNode(column_list, separator=", "),
                         SequenceNode(values_list, separator=", "))
     
-    def _generate_update_statement(self, context: GenerationContext) -> UpdateNode:
+    def generate_update(self, context: GenerationContext) -> UpdateNode:
         """Generate an UPDATE statement."""
         if not context.current_table:
             # Fallback to a simple UPDATE
@@ -757,11 +710,11 @@ class GrammarGenerator:
         # Generate WHERE clause (optional)
         where_clause = None
         if random.random() < 0.8:  # 80% chance
-            where_clause = self._generate_where_clause(context)
+            where_clause = self.generate_where_clause(context)
         
         return UpdateNode(TableNode(context.current_table), assignment, where_clause)
     
-    def _generate_delete_statement(self, context: GenerationContext) -> DeleteNode:
+    def generate_delete(self, context: GenerationContext) -> DeleteNode:
         """Generate a DELETE statement."""
         if not context.current_table:
             # Fallback to a simple DELETE
@@ -770,23 +723,103 @@ class GrammarGenerator:
         # Generate WHERE clause (optional)
         where_clause = None
         if random.random() < 0.8:  # 80% chance
-            where_clause = self._generate_where_clause(context)
+            where_clause = self.generate_where_clause(context)
         
         return DeleteNode(TableNode(context.current_table), where_clause)
     
-    def _generate_create_table_statement(self, context: GenerationContext) -> RawSQL:
-        """Generate a CREATE TABLE statement."""
-        # Generate a simple CREATE TABLE statement
-        table_name = f"test_table_{random.randint(1, 999)}"
-        return RawSQL(f"CREATE TABLE {table_name} (id INTEGER PRIMARY KEY, name TEXT)")
+    def generate_ddl(self, context: GenerationContext) -> RawSQL:
+        """Generate YugabyteDB-specific DDL statements with advanced data types and features."""
+        ddl_templates = [
+            # Tables with JSON and array types
+            "CREATE TABLE test_json_table (id SERIAL PRIMARY KEY, data JSONB, tags TEXT[], metadata JSONB)",
+            "CREATE TABLE test_array_table (id INTEGER PRIMARY KEY, numbers INTEGER[], names TEXT[], prices NUMERIC[])",
+            "CREATE TABLE test_complex_table (id BIGSERIAL, name VARCHAR(100), created_at TIMESTAMP WITH TIME ZONE, data JSONB, tags TEXT[], status SMALLINT)",
+            
+            # YugabyteDB-specific features
+            "CREATE TABLE test_partitioned_table (id INTEGER, name TEXT, created_date DATE) PARTITION BY RANGE (created_date)",
+            "CREATE TABLE test_compression_table (id INTEGER PRIMARY KEY, data TEXT)",
+            "CREATE TABLE test_colocated_table (id INTEGER PRIMARY KEY, name TEXT)",
+            "CREATE TABLE test_hash_partitioned (id INTEGER PRIMARY KEY, name TEXT) PARTITION BY HASH (id)",
+            
+            # Advanced storage options
+            "CREATE TABLE test_storage_table (id INTEGER PRIMARY KEY, data TEXT) WITH (fillfactor = 70, autovacuum_enabled = false)",
+            "CREATE TABLE test_parallel_table (id INTEGER PRIMARY KEY, data TEXT) WITH (parallel_workers = 4)",
+            "CREATE TABLE test_toast_table (id INTEGER PRIMARY KEY, large_data TEXT) WITH (toast_tuple_target = 2048)",
+            
+            # Views with complex queries
+            "CREATE VIEW test_view AS SELECT 1 as id, 'test' as name, 'value' as extracted_key",
+            "CREATE VIEW test_agg_view AS SELECT category, COUNT(*), AVG(price::numeric) FROM products GROUP BY category",
+            "CREATE VIEW test_json_view AS SELECT id, jsonb_extract_path_text(data, 'key') as key_value FROM test_json_table",
+            "CREATE VIEW test_array_view AS SELECT id, unnest(tags) as tag FROM test_array_table",
+            
+            # Indexes with YugabyteDB features
+            "CREATE INDEX test_gin_index ON test_json_table USING GIN (data)",
+            "CREATE INDEX test_btree_index ON ybfuzz_schema.products (name, price DESC)",
+            "CREATE INDEX test_partial_index ON ybfuzz_schema.products (price) WHERE price > 0",
+            "CREATE INDEX test_covering_index ON ybfuzz_schema.products (id) INCLUDE (name, price)",
+            "CREATE INDEX test_concurrent_index ON ybfuzz_schema.products (name)",
+            "CREATE INDEX test_gin_trgm_index ON ybfuzz_schema.products USING GIN (name gin_trgm_ops)",
+            
+            # Functions and procedures
+            "CREATE OR REPLACE FUNCTION test_func() RETURNS INTEGER AS $$ SELECT 42 $$ LANGUAGE SQL",
+            "CREATE OR REPLACE FUNCTION test_json_func(data JSONB) RETURNS TEXT AS $$ SELECT data->>'key' $$ LANGUAGE SQL",
+            "CREATE OR REPLACE FUNCTION test_array_func(arr INTEGER[]) RETURNS INTEGER AS $$ SELECT array_length(arr, 1) $$ LANGUAGE SQL",
+            
+            # Triggers
+            "CREATE TRIGGER test_trigger AFTER INSERT ON ybfuzz_schema.products FOR EACH ROW EXECUTE FUNCTION test_func()",
+            "CREATE TRIGGER test_json_trigger AFTER UPDATE ON test_json_table FOR EACH ROW EXECUTE FUNCTION test_json_func()",
+            
+            # Materialized views
+            "CREATE MATERIALIZED VIEW test_matview AS SELECT id, name, price FROM ybfuzz_schema.products WITH DATA",
+            "CREATE MATERIALIZED VIEW test_refresh_matview AS SELECT COUNT(*) as count FROM ybfuzz_schema.products WITH NO DATA",
+            
+            # Schemas and extensions
+            "CREATE SCHEMA IF NOT EXISTS test_schema",
+            "CREATE EXTENSION IF NOT EXISTS pg_trgm",
+            "CREATE EXTENSION IF NOT EXISTS btree_gin",
+            
+            # Tablespaces and storage
+            "CREATE TABLE test_tablespace_table (id INTEGER PRIMARY KEY, data TEXT)",
+            "CREATE TABLE test_tablespace_table2 (id INTEGER PRIMARY KEY, data TEXT)",
+            
+            # Foreign data wrappers - removed due to handler/server not existing
+            # "CREATE FOREIGN DATA WRAPPER test_wrapper HANDLER test_handler",
+            # "CREATE SERVER test_server FOREIGN DATA WRAPPER test_wrapper",
+            # "CREATE FOREIGN TABLE test_foreign_table (id INTEGER, name TEXT) SERVER test_server",
+            
+            # Advanced constraints
+            "CREATE TABLE test_constraints (id INTEGER PRIMARY KEY, name TEXT UNIQUE, age INTEGER CHECK (age > 0), email TEXT UNIQUE)",
+            "CREATE TABLE test_fk_table (id INTEGER PRIMARY KEY, ref_id INTEGER REFERENCES ybfuzz_schema.products(id) ON DELETE CASCADE)"
+            # "CREATE TABLE test_exclusion_table (id INTEGER PRIMARY KEY, period tstzrange, EXCLUDE USING gist (period WITH &&))", # Removed due to gist extension not being available
+            
+            # Partitioning with YugabyteDB features
+            "CREATE TABLE test_range_partition (id INTEGER, created_date DATE) PARTITION BY RANGE (created_date)",
+            "CREATE TABLE test_list_partition (id INTEGER, region TEXT) PARTITION BY LIST (region)"
+            # "CREATE TABLE test_range_partition_2024 PARTITION OF test_range_partition FOR VALUES FROM ('2024-01-01') TO ('2025-01-01')", # Removed due to parent table dependency
+            # "CREATE TABLE test_list_partition_us PARTITION OF test_list_partition FOR VALUES IN ('US', 'Canada')", # Removed due to parent table dependency
+            
+            # Advanced data types
+            "CREATE TABLE test_uuid_table (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), name TEXT)",
+            "CREATE TABLE test_network_table (id INTEGER PRIMARY KEY, ip INET, cidr CIDR)",
+            "CREATE TABLE test_geometric_table (id INTEGER PRIMARY KEY, point POINT, line LINE, circle CIRCLE)",
+            "CREATE TABLE test_bit_table (id INTEGER PRIMARY KEY, flags BIT(8), var_flags BIT VARYING(16))"
+            # "CREATE TABLE test_xml_table (id INTEGER PRIMARY KEY, xml_data XML)", # Removed due to XML type not being available
+            # "CREATE TABLE test_tsvector_table (id INTEGER PRIMARY KEY, search_vector TSVECTOR)", # Removed due to text search extensions not being available
+            
+            # YugabyteDB-specific optimizations
+            "CREATE TABLE test_optimized_table (id INTEGER PRIMARY KEY, data TEXT) WITH (yb_enable_upsert_mode = true)"
+            # "CREATE TABLE test_consistency_table (id INTEGER PRIMARY KEY, data TEXT) WITH (yb_read_after_commit_visibility = true)", # Removed due to parameter not being available
+        ]
+        
+        return RawSQL(random.choice(ddl_templates))
     
-    def _generate_drop_table_statement(self, context: GenerationContext) -> RawSQL:
+    def generate_drop_table(self, context: GenerationContext) -> RawSQL:
         """Generate a DROP TABLE statement."""
         # Generate a simple DROP TABLE statement
         table_name = f"test_table_{random.randint(1, 999)}"
         return RawSQL(f"DROP TABLE IF EXISTS {table_name}")
     
-    def _generate_aggregate_function(self, context: GenerationContext) -> RawSQL:
+    def generate_aggregate_function(self, context: GenerationContext) -> RawSQL:
         """Generate an aggregate function."""
         if not context.current_table:
             return RawSQL("COUNT(*)")
@@ -810,7 +843,7 @@ class GrammarGenerator:
             # For COUNT, any column type is fine
             return RawSQL(f'{func}("{column.name}")')
     
-    def _generate_where_clause(self, context: GenerationContext) -> WhereClauseNode:
+    def generate_where_clause(self, context: GenerationContext) -> WhereClauseNode:
         """Generate a WHERE clause."""
         if not context.current_table:
             return WhereClauseNode([RawSQL("WHERE"), RawSQL("1 = 1")])
@@ -835,7 +868,7 @@ class GrammarGenerator:
         
         return WhereClauseNode([RawSQL("WHERE"), comparison])
     
-    def _generate_group_by_clause(self, context: GenerationContext) -> RawSQL:
+    def generate_group_by_clause(self, context: GenerationContext) -> RawSQL:
         """Generate a GROUP BY clause."""
         if not context.current_table:
             return RawSQL("GROUP BY 1")
@@ -844,7 +877,7 @@ class GrammarGenerator:
         column = random.choice(context.current_table.columns)
         return RawSQL(f'GROUP BY "{column.name}"')
     
-    def _generate_order_by_clause(self, context: GenerationContext) -> RawSQL:
+    def generate_order_by_clause(self, context: GenerationContext) -> RawSQL:
         """Generate an ORDER BY clause."""
         if not context.current_table:
             return RawSQL("ORDER BY 1")
@@ -854,821 +887,780 @@ class GrammarGenerator:
         direction = random.choice(['ASC', 'DESC'])
         return RawSQL(f'ORDER BY "{column.name}" {direction}')
     
-    def _generate_limit_clause(self, context: GenerationContext) -> RawSQL:
+    def generate_limit_clause(self, context: GenerationContext) -> RawSQL:
         """Generate a LIMIT clause."""
         limit_value = random.randint(1, 100)
         return RawSQL(f"LIMIT {limit_value}")
 
-    def _generate_choice(self, rule_name: str, rule_def: dict, context: GenerationContext) -> SQLNode | None:
-        if rule_name == "select_list_item" and context.grouping_columns:
-            # Filter grouping_columns to only include columns from the current table
-            valid_grouping_columns = []
-            if context.current_table:
-                for col in context.grouping_columns:
-                    if any(existing_col.name == col.name for existing_col in context.current_table.columns):
-                        valid_grouping_columns.append(col)
-            
-            if valid_grouping_columns:
-                if random.random() < 0.5: 
-                    return ColumnNode(random.choice(valid_grouping_columns))
-                else: 
-                    # Try aggregate function first, fallback to column if it fails
-                    agg_result = self._generate_rule("aggregate_function", context)
-                    if agg_result:
-                        return agg_result
-                    else:
-                        # Fallback to a simple column reference
-                        return ColumnNode(random.choice(valid_grouping_columns))
-            else:
-                # No valid grouping columns, fallback to current table columns
-                if context.current_table:
-                    column = self.catalog.get_random_column(context.current_table)
-                    if column:
-                        return ColumnNode(column)
-        
-        # Special handling for GROUP BY lists to prevent empty results
-        if rule_name == "group_by_list":
-            # Ensure we always have at least one valid column for GROUP BY
-            if context.current_table:
-                column = self.catalog.get_random_column(context.current_table)
-                if column:
-                    return ColumnNode(column)
-                else:
-                    return None
-            else:
+    def generate_complex_select(self, context: GenerationContext) -> Optional[SelectNode]:
+        """Generate complex SELECT queries with YugabyteDB-specific features."""
+        try:
+            # Generate complex column expressions
+            columns = self._generate_complex_columns(context)
+            if not columns:
                 return None
+            
+            # Generate complex FROM clause with multiple tables and joins
+            from_clause = self._generate_complex_from_clause(context)
+            if not from_clause:
+                return None
+            
+            # Generate complex WHERE clause with YugabyteDB features
+            where_clause = self._generate_complex_where_clause(context)
+            
+            # Generate GROUP BY with HAVING
+            group_by = self._generate_group_by_clause(context)
+            having_clause = self._generate_having_clause(context) if group_by else None
+            
+            # Generate ORDER BY with YugabyteDB-specific features
+            order_by = self._generate_complex_order_by(context)
+            
+            # Generate LIMIT and OFFSET
+            limit = random.randint(1, 100) if random.random() < 0.7 else None
+            offset = random.randint(0, 50) if limit and random.random() < 0.3 else None
+            
+            # Generate CTEs (Common Table Expressions)
+            ctes = self._generate_ctes(context) if random.random() < 0.4 else None
+            
+            # Generate window functions
+            window_functions = self._generate_window_functions(context) if random.random() < 0.3 else None
+            
+            # Generate DISTINCT or DISTINCT ON
+            distinct = None
+            if random.random() < 0.2:
+                if random.random() < 0.5:
+                    distinct = "DISTINCT"
+                else:
+                    distinct = f"DISTINCT ON ({random.choice(columns).to_sql()})"
+            
+            return SelectNode(
+                projections=columns,
+                from_clause=from_clause,
+                where_clause=where_clause,
+                group_by_clause=group_by,
+                limit_clause=limit
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Error generating complex SELECT: {e}")
+            return None
+
+    def _generate_complex_columns(self, context: GenerationContext) -> List[ColumnNode]:
+        """Generate complex column expressions with YugabyteDB features."""
+        columns = []
         
-        weights_config = self.config.get('statement_weights' if rule_name in ['ddl_statement', 'dml_statement'] else 'rule_choice_weights', {}).get(rule_name, {})
-        options = rule_def["options"]
-        weights = [weights_config.get(opt, 1.0) for opt in options]
+        # Basic columns
+        basic_columns = self._get_available_columns(context)
+        if basic_columns:
+            for _ in range(random.randint(1, 3)):
+                col = random.choice(basic_columns)
+                columns.append(RawSQL(col))
         
-        # Try each option until one works
-        for _ in range(len(options)):
-            chosen_rule = random.choices(options, weights=weights, k=1)[0]
-            result = self._generate_rule(chosen_rule, context)
-            if result:
-                return result
+        # YugabyteDB-specific functions
+        yb_functions = [
+            "jsonb_extract_path_text", "jsonb_typeof", "jsonb_pretty",
+            "array_length", "array_agg", "array_to_string",
+            "string_to_array", "unnest", "generate_series",
+            "regexp_replace", "regexp_split_to_table", "split_part",
+            "date_trunc", "extract", "age", "now", "current_timestamp",
+            "random", "floor", "ceil", "round", "abs", "greatest", "least"
+        ]
         
-        # If all options fail, try the first one as a fallback
-        if options:
-            result = self._generate_rule(options[0], context)
-            if result:
-                return result
+        # Add function calls
+        for _ in range(random.randint(1, 4)):
+            func = random.choice(yb_functions)
+            if func in ["jsonb_extract_path_text", "jsonb_typeof"]:
+                # JSON functions
+                columns.append(RawSQL(f"{func}(data, 'key')"))
+            elif func in ["array_length", "array_agg"]:
+                # Array functions
+                columns.append(RawSQL(f"{func}(id_array)"))
+            elif func in ["regexp_replace", "split_part"]:
+                # String functions
+                columns.append(RawSQL(f"{func}(name, 'pattern', 'replacement')"))
+            elif func in ["date_trunc", "extract"]:
+                # Date functions
+                columns.append(RawSQL(f"{func}('day', created_date)"))
+            else:
+                # Simple functions
+                columns.append(RawSQL(f"{func}()"))
         
-        # For critical statement types, generate a fallback
-        if rule_name in ['ddl_statement', 'dml_statement', 'select_stmt']:
-            return self._generate_fallback_statement(rule_name, context)
+        # Complex expressions
+        complex_exprs = [
+            "CASE WHEN price > 100 THEN 'expensive' ELSE 'cheap' END",
+            "COALESCE(description, 'No description')",
+            "NULLIF(stock_count, 0)",
+            "GREATEST(price, 10, 20)",
+            "LEAST(quantity, 100)",
+            "price::numeric::text",
+            "CAST(id AS text) || '_' || name",
+            "EXTRACT(epoch FROM created_date)",
+            "date_trunc('month', created_date) + interval '1 month' - interval '1 day'"
+        ]
         
+        for _ in range(random.randint(1, 3)):
+            expr = random.choice(complex_exprs)
+            columns.append(RawSQL(expr))
+        
+        # Subqueries
+        if random.random() < 0.3:
+            subquery = f"(SELECT COUNT(*) FROM {random.choice(self._get_available_tables(context))})"
+            columns.append(RawSQL(f"subquery_count"))
+        
+        return columns
+
+    def _generate_complex_from_clause(self, context: GenerationContext) -> List[RawSQL]:
+        """Generate complex FROM clause with multiple tables and joins."""
+        tables = []
+        available_tables = self._get_available_tables(context)
+        
+        if not available_tables:
+            return [RawSQL("information_schema.tables")]
+        
+        # Select 2-4 tables for complex joins
+        num_tables = random.randint(2, min(4, len(available_tables)))
+        selected_tables = random.sample(available_tables, num_tables)
+        
+        for i, table in enumerate(selected_tables):
+            table_node = RawSQL(table)
+            
+            # Add table aliases
+            if random.random() < 0.7:
+                table_node.alias = f"t{i+1}"
+            
+            # Add join conditions for subsequent tables
+            if i > 0:
+                join_type = random.choice(["INNER JOIN", "LEFT JOIN", "RIGHT JOIN", "FULL JOIN"])
+                join_condition = self._generate_join_condition(selected_tables[i-1], table, i)
+                table_node.join_type = join_type
+                table_node.join_condition = join_condition
+            
+            tables.append(table_node)
+        
+        return tables
+    
+    def _generate_join_condition(self, table1: str, table2: str, index: int) -> str:
+        """Generate join conditions between tables."""
+        # Common join patterns
+        join_patterns = [
+            f"t{index}.id = t{index+1}.id",
+            f"t{index}.product_id = t{index+1}.id",
+            f"t{index}.category_id = t{index+1}.id",
+            f"t{index}.id = t{index+1}.parent_id",
+            f"t{index}.name LIKE '%' || t{index+1}.name || '%'",
+            f"t{index}.created_date::date = t{index+1}.created_date::date",
+            f"t{index}.price BETWEEN t{index+1}.min_price AND t{index+1}.max_price"
+        ]
+        
+        return random.choice(join_patterns)
+    
+    def _generate_ctes(self, context: GenerationContext) -> List[str]:
+        """Generate Common Table Expressions (CTEs)."""
+        ctes = []
+        
+        cte_templates = [
+            "cte_data AS (SELECT * FROM products WHERE price > 50)",
+            "cte_agg AS (SELECT category, AVG(price) as avg_price FROM products GROUP BY category)",
+            "cte_ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY category ORDER BY price DESC) as rn FROM products)",
+            "cte_filtered AS (SELECT * FROM orders WHERE quantity > 5)",
+            "cte_dates AS (SELECT generate_series('2024-01-01'::date, '2024-12-31'::date, '1 day'::interval) as date)"
+        ]
+        
+        num_ctes = random.randint(1, 3)
+        for _ in range(num_ctes):
+            cte = random.choice(cte_templates)
+            ctes.append(cte)
+        
+        return ctes
+    
+    def _generate_window_functions(self, context: GenerationContext) -> List[str]:
+        """Generate window functions for YugabyteDB."""
+        window_functions = []
+        
+        window_templates = [
+            "ROW_NUMBER() OVER (ORDER BY price DESC)",
+            "RANK() OVER (PARTITION BY category ORDER BY price DESC)",
+            "DENSE_RANK() OVER (PARTITION BY category ORDER BY price DESC)",
+            "LAG(price, 1) OVER (ORDER BY created_date)",
+            "LEAD(price, 1) OVER (ORDER BY created_date)",
+            "FIRST_VALUE(price) OVER (PARTITION BY category ORDER BY price DESC)",
+            "LAST_VALUE(price) OVER (PARTITION BY category ORDER BY price DESC)",
+            "NTILE(4) OVER (ORDER BY price DESC)",
+            "CUME_DIST() OVER (ORDER BY price)",
+            "PERCENT_RANK() OVER (ORDER BY price)"
+        ]
+        
+        num_windows = random.randint(1, 3)
+        for _ in range(num_windows):
+            func = random.choice(window_templates)
+            window_functions.append(func)
+
+    def _generate_complex_where_clause(self, context: GenerationContext) -> Optional[WhereClauseNode]:
+        """Generate complex WHERE clause with YugabyteDB features."""
+        conditions = []
+        
+        # Basic conditions
+        basic_conditions = [
+            "price > 100",
+            "stock_count BETWEEN 10 AND 1000",
+            "name ILIKE '%product%'",
+            "category IN ('electronics', 'clothing', 'books')",
+            "created_date >= '2024-01-01'::date",
+            "quantity IS NOT NULL",
+            "price::numeric > 50.0"
+        ]
+        
+        for _ in range(random.randint(2, 5)):
+            condition = random.choice(basic_conditions)
+            conditions.append(condition)
+        
+        # YugabyteDB-specific conditions
+        yb_conditions = [
+            "data ? 'key'",  # JSON contains key
+            "data->>'value' = 'expected'",  # JSON extract and compare
+            "data @> '{\"key\": \"value\"}'",  # JSON contains
+            "data <@ '{\"key\": \"value\"}'",  # JSON contained in
+            "id_array && ARRAY[1,2,3]",  # Array overlap
+            "id_array @> ARRAY[1]",  # Array contains
+            "name ~ '^[A-Z]'",  # Regex match
+            "name !~ '^[0-9]'",  # Regex not match
+            "price::text SIMILAR TO '%[0-9]%'",  # Similar to
+            "description IS DISTINCT FROM 'default'",  # IS DISTINCT FROM
+            "created_date::timestamp AT TIME ZONE 'UTC' > '2024-01-01'::timestamp"
+        ]
+        
+        for _ in range(random.randint(1, 3)):
+            condition = random.choice(yb_conditions)
+            conditions.append(condition)
+        
+        # Complex expressions
+        complex_conditions = [
+            "EXISTS (SELECT 1 FROM orders WHERE product_id = products.id)",
+            "price > (SELECT AVG(price) FROM products)",
+            "stock_count > ALL (SELECT quantity FROM orders)",
+            "category = ANY (SELECT DISTINCT category FROM products WHERE price > 100)",
+            "created_date > (SELECT MAX(created_date) FROM products) - interval '30 days'"
+        ]
+        
+        for _ in range(random.randint(1, 2)):
+            condition = random.choice(complex_conditions)
+            conditions.append(condition)
+        
+        # Combine conditions with logical operators
+        if len(conditions) == 1:
+            return WhereClauseNode([RawSQL(conditions[0])])
+        
+        combined = conditions[0]
+        for condition in conditions[1:]:
+            operator = random.choice(["AND", "OR"])
+            combined = f"({combined}) {operator} ({condition})"
+        
+        return WhereClauseNode([RawSQL(combined)])
+    
+    def _generate_group_by_clause(self, context: GenerationContext) -> Optional[List[str]]:
+        """Generate GROUP BY clause."""
+        if random.random() < 0.6:
+            columns = ["category", "created_date::date", "price::numeric::int"]
+            num_groups = random.randint(1, 2)
+            return random.sample(columns, num_groups)
+        return None
+    
+    def _generate_having_clause(self, context: GenerationContext) -> Optional[str]:
+        """Generate HAVING clause."""
+        having_conditions = [
+            "COUNT(*) > 5",
+            "AVG(price) > 100",
+            "SUM(quantity) > 1000",
+            "MAX(price) < 500",
+            "MIN(stock_count) > 0"
+        ]
+        
+        if random.random() < 0.4:
+            return random.choice(having_conditions)
+        return None
+    
+    def _generate_complex_order_by(self, context: GenerationContext) -> Optional[List[str]]:
+        """Generate complex ORDER BY clause."""
+        if random.random() < 0.7:
+            order_columns = [
+                "price DESC",
+                "name ASC",
+                "created_date DESC NULLS LAST",
+                "stock_count ASC NULLS FIRST",
+                "category COLLATE \"C\"",
+                "price::numeric::int DESC"
+            ]
+            
+            num_orders = random.randint(1, 3)
+            return random.sample(order_columns, num_orders)
         return None
 
-    def _generate_fallback_statement(self, statement_type: str, context: GenerationContext) -> SQLNode:
-        """Generates a safe fallback statement when normal generation fails."""
-        schema_name = self.config.get_db_config()['schema_name']
+    def _get_available_tables(self, context: GenerationContext) -> List[str]:
+        """Get available tables for complex queries."""
+        if context.catalog:
+            tables = context.catalog.get_all_tables()
+            if tables:
+                return [table.name for table in tables]
         
-        if statement_type == 'ddl_statement':
-            # Generate a simple CREATE TABLE statement
-            return CreateTableNode(
-                RawSQL(f'{schema_name}."fallback_table"'),
-                ColumnDefNode(RawSQL('"id"'), RawSQL('INT PRIMARY KEY'))
-            )
-        elif statement_type == 'dml_statement':
-            # Generate a simple INSERT statement
-            table = self.catalog.get_random_table()
-            if table:
-                return InsertNode(
-                    RawSQL(f'{schema_name}."{table.name}"'),
-                    RawSQL('"name"'),
-                    RawSQL("'fallback'")
-                )
-            else:
-                # Fallback to a safe SELECT
-                return SelectNode(
-                    RawSQL("1"),
-                    RawSQL(f'{schema_name}."products"'),
-                    None, None, None
-                )
-        else:  # select_stmt
-            # Generate a simple SELECT statement
-            return SelectNode(
-                RawSQL("1"),
-                RawSQL(f'{schema_name}."products"'),
-                None, None, None
-            )
-
-    def _generate_sequence(self, rule_name: str, rule_def: dict, context: GenerationContext) -> SQLNode | None:
-        elements = []
-        element_nodes = {}
-        
-        for element_def in rule_def["elements"]:
-            if element_def.get("optional") and random.random() > self.config.get('rule_expansion_probabilities', {}).get(rule_name, {}).get(element_def['config_key'], 0): 
-                continue
-            node = self._generate_rule(element_def["rule"], context)
-            if node: 
-                elements.append(node)
-                element_nodes[element_def["rule"]] = node
-        
-        context.expected_type = None
-        if not elements: return None
-        
-        if rule_name == 'select_stmt': 
-            return SelectNode(element_nodes.get('select_list'), element_nodes.get('from_clause'), 
-                           element_nodes.get('where_clause'), element_nodes.get('group_by_clause'), 
-                           element_nodes.get('limit_clause'))
-        if rule_name == 'select_stmt_advanced':
-            # Generate advanced YugabyteDB queries with CTEs, JOINs, etc.
-            select_stmt = element_nodes.get('select_stmt')
-            if select_stmt:
-                return select_stmt  # Return the enhanced SELECT statement
-            else:
-                # Fallback to basic SELECT
-                return self._generate_rule('select_stmt', context)
-        if rule_name == 'create_table_stmt': 
-            return CreateTableNode(element_nodes.get('new_table_name'), element_nodes.get('column_definitions'))
-        if rule_name == 'create_view_stmt': 
-            # Only create views if we have a valid select statement
-            select_stmt = element_nodes.get('select_stmt')
-            if select_stmt:
-                return CreateViewNode(element_nodes.get('new_view_name'), select_stmt)
-            else:
-                # Fallback to a simple view if select generation fails
-                schema_name = self.config.get_db_config()['schema_name']
-                fallback_select = SelectNode(
-                    RawSQL("1"), 
-                    RawSQL(f'{schema_name}."products"'),
-                    None, None, None
-                )
-                return CreateViewNode(element_nodes.get('new_view_name'), fallback_select)
-        if rule_name == 'create_index_stmt': 
-            return CreateIndexNode(element_nodes.get('new_index_name'), element_nodes.get('table_name'), 
-                                element_nodes.get('column_name'))
-        if rule_name == 'insert_stmt': 
-            return InsertNode(element_nodes.get('table_name'), element_nodes.get('column_list'), 
-                           element_nodes.get('literal_list'))
-        if rule_name == 'update_stmt': 
-            return UpdateNode(element_nodes.get('table_name'), element_nodes.get('update_assignment'), 
-                           element_nodes.get('where_clause'))
-        if rule_name == 'delete_stmt': 
-            return DeleteNode(element_nodes.get('table_name'), element_nodes.get('where_clause'))
-        if rule_name == 'column_definition': 
-            return ColumnDefNode(element_nodes.get('column_name'), element_nodes.get('data_type'))
-        if rule_name == 'update_assignment': 
-            column_node = element_nodes.get('column_name')
-            if isinstance(column_node, ColumnNode):
-                # Set the expected type for the expression to match the column type
-                context.expected_type = column_node.column.data_type
-                # Don't change the current table context during statement generation
-                # This prevents column mixing between different tables
-            return UpdateAssignmentNode(column_node, element_nodes.get('update_expression'))
-        
-        if rule_name == 'cte_clause':
-            # Generate Common Table Expressions (CTEs)
-            cte_def = element_nodes.get('cte_definition')
-            if cte_def:
-                return cte_def
-            return None
-        
-        if rule_name == 'cte_definition':
-            # Generate CTE definition
-            cte_name = element_nodes.get('cte_name')
-            select_stmt = element_nodes.get('select_stmt')
-            if cte_name and select_stmt:
-                return SequenceNode([
-                    cte_name,
-                    RawSQL("AS"),
-                    RawSQL("("),
-                    select_stmt,
-                    RawSQL(")")
-                ])
-            return None
-        
-        if rule_name == 'join_clause':
-            # Generate JOIN clauses
-            join_type = element_nodes.get('join_type')
-            table_name = element_nodes.get('table_name')
-            join_condition = element_nodes.get('join_condition')
-            if join_type and table_name and join_condition:
-                return SequenceNode([
-                    join_type,
-                    table_name,
-                    RawSQL("ON"),
-                    join_condition
-                ])
-            return None
-        
-        if rule_name == 'update_expression':
-            # For UPDATE expressions, prefer simple literals to avoid complex issues
-            # Avoid complex expressions that might contain problematic patterns
-            if random.random() < 0.9:  # 90% chance of simple literal
-                return self._generate_rule('literal', context)
-            else:  # 10% chance of simple arithmetic
-                return self._generate_rule('arithmetic_expression', context)
-        if rule_name == 'comparison_predicate':
-            col_node = element_nodes.get('column_name')
-            if isinstance(col_node, ColumnNode): context.expected_type = col_node.column.data_type
-            
-            # Ensure we have a valid comparison operator
-            comparison_op = element_nodes.get('comparison_op')
-            if comparison_op:
-                op_sql = comparison_op.to_sql()
-                # Validate that the operator is one of the expected ones
-                valid_ops = ['=', '<>', '<', '<=', '>', '>=']
-                if op_sql not in valid_ops:
-                    # Fallback to a safe operator
-                    op_sql = '='
-            else:
-                op_sql = '='
-            
-            # Ensure we have a valid right-hand side
-            right_side = self._generate_rule('literal', context)
-            if not right_side:
-                # Fallback to a safe literal
-                right_side = RawSQL("1")
-            
-            return BinaryOpNode(col_node, op_sql, right_side)
-        if rule_name == 'from_clause':
-            # Ensure we have a valid table reference
-            table_node = element_nodes.get('table_name')
-            if not table_node:
-                # Fallback to a safe table
-                schema_name = self.config.get_db_config()['schema_name']
-                return RawSQL(f"FROM {schema_name}.\"products\"")
-            
-            try:
-                table_sql = table_node.to_sql()
-                if not table_sql or 'FROM' not in table_sql:
-                    # Ensure FROM keyword is present
-                    if not table_sql.startswith('FROM'):
-                        table_sql = f"FROM {table_sql}"
-                    return RawSQL(table_sql)
-                return table_node
-            except Exception:
-                # Fallback to a safe table reference
-                schema_name = self.config.get_db_config()['schema_name']
-                return RawSQL(f"FROM {schema_name}.\"products\"")
-
-        if rule_name == 'where_clause': 
-            # Ensure WHERE clause has valid content
-            if not elements or len(elements) < 2:
-                return None
-            
-            # The first element should be "WHERE", the second should be the expression
-            where_keyword = elements[0]
-            where_expression = elements[1]
-            
-            if not where_expression:
-                return None
-            
-            # CRITICAL SAFETY CHECK: Ensure the WHERE expression is properly structured
-            # This prevents malformed WHERE clauses like "WHERE ("col_62" <> '66.27618827479812') "col_62""
-            if hasattr(where_expression, 'to_sql'):
-                expr_sql = where_expression.to_sql()
-                if expr_sql:
-                    # Check for malformed expressions with multiple conditions without operators
-                    if expr_sql.count('"') > 2:  # More than one quoted identifier
-                        # This suggests malformed WHERE clause, generate a simple one
-                        if context.current_table:
-                            column = self.catalog.get_random_column(context.current_table)
-                            if column:
-                                return WhereClauseNode([where_keyword, 
-                                    BinaryOpNode(ColumnNode(column), '=', 
-                                    self._generate_safe_literal_for_type(column.data_type))])
-                    
-                    # Check for expressions that end with a column name (missing operator)
-                    if expr_sql.strip().endswith('"') and not expr_sql.strip().endswith('";'):
-                        # This suggests malformed WHERE clause, generate a simple one
-                        if context.current_table:
-                            column = self.catalog.get_random_column(context.current_table)
-                            if column:
-                                return WhereClauseNode([where_keyword, 
-                                    BinaryOpNode(ColumnNode(column), '=', 
-                                    self._generate_safe_literal_for_type(column.data_type))])
-            
-            return WhereClauseNode([where_keyword, where_expression])
-
-        if rule_name == 'group_by_clause': 
-            # Ensure we have valid columns for GROUP BY
-            if not elements:
-                return None
-            
-            # Filter out None elements
-            valid_elements = [e for e in elements if e is not None]
-            if not valid_elements:
-                return None
-            
-            # The grammar already includes "GROUP BY", so just return the list
-            return SequenceNode(valid_elements, separator=", ")
-
-        if rule_name == 'group_by_list':
-            # This should only be called for the list of columns, not the full clause
-            if not elements:
-                return None
-            
-            # Filter out None elements and ensure we have valid columns
-            valid_elements = []
-            for e in elements:
-                if e is not None and hasattr(e, 'to_sql'):
-                    sql = e.to_sql()
-                    if sql and sql.strip() and sql.strip() != '' and sql.strip() != ',':
-                        # Additional validation: ensure this looks like a valid column
-                        if not sql.strip().startswith('"') or not sql.strip().endswith('"'):
-                            valid_elements.append(e)
-            
-            # Ensure we have at least one valid column for GROUP BY
-            if not valid_elements:
-                # Fallback to a safe column
-                if context.current_table:
-                    column = self.catalog.get_random_column(context.current_table)
-                    if column:
-                        valid_elements.append(ColumnNode(column))
-                    else:
-                        return None
-                else:
-                    return None
-            
-            # If we still don't have valid elements, return None to prevent empty GROUP BY
-            if not valid_elements:
-                return None
-
-            # Comprehensive validation: Ensure proper SQL structure
-            # This validation ensures we never generate malformed SQL
-            final_elements = []
-            for elem in valid_elements:
-                if elem and hasattr(elem, 'to_sql'):
-                    elem_sql = elem.to_sql()
-                    if elem_sql and elem_sql.strip():
-                        # Check for any problematic patterns
-                        if (elem_sql.strip() == '' or 
-                            elem_sql.strip() == ',' or 
-                            elem_sql.strip() == 'GROUP' or 
-                            elem_sql.strip() == 'BY' or 
-                            elem_sql.strip() == 'GROUP BY'):
-                            # Found a problematic element, skip it
-                            continue
-                        else:
-                            final_elements.append(elem)
-
-            # If we don't have any final elements, disable GROUP BY entirely
-            if not final_elements:
-                return None
-
-            return SequenceNode(final_elements, separator=", ")
-
-        if rule_name == 'limit_clause':
-            # Ensure LIMIT comes after GROUP BY if present
-            if not elements:
-                return None
-            
-            # Filter out None elements
-            valid_elements = [e for e in elements if e is not None]
-            if not valid_elements:
-                return None
-            
-            return SequenceNode(valid_elements, separator=" ")
-
-        return SequenceNode(elements, separator=rule_def.get("separator", " "))
-
-    def _generate_terminal(self, rule_name: str, context: GenerationContext) -> SQLNode | None:
-        if rule_name in ["new_view_name", "new_index_name"]:
-            prefix = rule_name.split('_')[1]
-            schema_name = self.config.get_db_config()['schema_name']
-            # Make names more unique to avoid conflicts, but avoid dots in names
-            timestamp = int(time.time() * 1000)  # Use milliseconds for more uniqueness
-            random_suffix = random.randint(1000, 9999)
-            # Generate clean names without dots to avoid syntax errors
-            clean_name = f"fuzz_{prefix}_{timestamp}_{random_suffix}"
-            return RawSQL(f'{schema_name}."{clean_name}"')
-        
-        if rule_name == "table_name":
-            # For UPDATE and DELETE statements, we need to ensure we only target actual tables, not views
-            # Check if we're in an UPDATE or DELETE context
-            is_update_context = context.recursion_depth.get("update_stmt", 0) > 0
-            is_delete_context = context.recursion_depth.get("delete_stmt", 0) > 0
-            
-            if is_update_context or is_delete_context or context.recursion_depth.get("insert_stmt", 0) > 0:
-                # Only get actual tables, not views, for UPDATE/DELETE/INSERT operations
-                table = self.catalog.get_random_table(exclude_views=True)
-            else:
-                # For other operations (SELECT), views are fine
-                table = self.catalog.get_random_table()
-            
-            if not table: return None
-            # Don't change the current table context during statement generation
-            # This prevents column mixing between different tables
-            schema_name = self.config.get_db_config()['schema_name']
-            return RawSQL(f'{schema_name}."{table.name}"')
-        
-        if rule_name == "new_table_name":
-            # For new tables, use the current schema and create realistic table names
-            schema_name = self.config.get_db_config()['schema_name']
-            # Use common table names that queries might reference
-            common_table_names = ['orders', 'customers', 'categories', 'inventory', 'suppliers', 'employees', 'transactions']
-            table_name = random.choice(common_table_names)
-            return RawSQL(f'{schema_name}."{table_name}_{int(time.time())}_{random.randint(100,999)}"')
-        
-        if rule_name == "column_name":
-            is_create_col = context.recursion_depth.get("column_definition", 0) > 0
-            if is_create_col: 
-                # For creating new columns, generate a simple name
-                return RawSQL(f'"col_{random.randint(1,100)}"')
-            
-            if not context.current_table: 
-                return None
-            
-            is_column_list = context.recursion_depth.get("column_list", 0) > 0
-            if is_column_list:
-                # For INSERT statements, avoid primary key and SERIAL columns
-                if context.recursion_depth.get("insert_stmt", 0) > 0:
-                    # Get a safe column that's not a primary key
-                    safe_columns = []
-                    for col in context.current_table.columns:
-                        # Skip primary key and SERIAL columns
-                        if 'PRIMARY KEY' not in col.data_type.upper() and 'SERIAL' not in col.data_type.upper():
-                            safe_columns.append(col)
-                    
-                    if safe_columns:
-                        column = random.choice(safe_columns)
-                    else:
-                        # If no safe columns, use any non-primary key column
-                        column = self.catalog.get_random_column(context.current_table)
-                else:
-                    column = self.catalog.get_random_column(context.current_table)
-                
-                if not column: return None
-                context.insert_columns.append(column)
-                return ColumnNode(column)
-            
-            col_type = 'numeric' if context.recursion_depth.get("aggregate_function", 0) > 0 else None
-            column = self.catalog.get_random_column(context.current_table, of_type=col_type)
-            if not column: 
-                # If no column found, try to get any column from the table
-                column = self.catalog.get_random_column(context.current_table)
-                if not column:
-                    return None
-            
-            # CRITICAL SAFETY CHECK: Ensure the column is actually from the current table
-            if column and context.current_table:
-                if not any(existing_col.name == column.name for existing_col in context.current_table.columns):
-                    self.logger.warning(f"Column '{column.name}' not found in current table '{context.current_table.name}', falling back to safe column")
-                    # Fallback to a safe column from the current table
-                    safe_column = self.catalog.get_random_column(context.current_table)
-                    if safe_column:
-                        column = safe_column
-                    else:
-                        return None
-            
-            # CRITICAL: Ensure the column name is not a reserved keyword or function name
-            if column and column.name:
-                column_name = column.name.lower()
-                reserved_keywords = ['min', 'max', 'sum', 'avg', 'count', 'select', 'from', 'where', 'group', 'by', 'order', 'limit', 'having', 'union', 'insert', 'update', 'delete', 'create', 'drop', 'alter', 'table', 'view', 'index', 'primary', 'key', 'foreign', 'references', 'constraint', 'check', 'default', 'null', 'not', 'and', 'or', 'in', 'exists', 'between', 'like', 'is', 'as', 'on', 'join', 'left', 'right', 'inner', 'outer', 'full', 'cross']
-                
-                if column_name in reserved_keywords:
-                    # Use a safe fallback column name
-                    return RawSQL('"safe_col"')
-            
-            if context.recursion_depth.get("group_by_list", 0) > 0: 
-                # Only add columns from the current table to grouping_columns
-                if context.current_table and any(existing_col.name == column.name for existing_col in context.current_table.columns):
-                    context.grouping_columns.append(column)
-            
-            return ColumnNode(column)
-        
-        if rule_name == "literal":
-            is_literal_list = context.recursion_depth.get("literal_list", 0) > 0
-            if is_literal_list and context.insert_columns:
-                column_for_this_literal = context.insert_columns.pop(0)
-                return LiteralNode(self._generate_safe_literal_for_type(column_for_this_literal.data_type))
-            
-            # If we have an expected type from context, use it
-            if context.expected_type:
-                return LiteralNode(self._generate_safe_literal_for_type(context.expected_type))
-            
-            # For UPDATE statements, try to infer the type from the column being updated
-            if context.recursion_depth.get("update_assignment", 0) > 0 and context.current_table:
-                # Try to find a column that matches the expected type
-                for col in context.current_table.columns:
-                    if col.data_type and any(t in col.data_type.lower() for t in ['int', 'numeric', 'text', 'bool']):
-                        return LiteralNode(self._generate_safe_literal_for_type(col.data_type))
-            
-            # Default to a safe integer
-            return LiteralNode(self._generate_safe_literal_for_type('int'))
-
-        if rule_name == "data_type": return RawSQL(random.choice(['INT PRIMARY KEY', 'TEXT', 'NUMERIC', 'BOOLEAN']))
-        if rule_name == "integer_literal": return LiteralNode(random.randint(1, 100))
-        if rule_name == "scalar_function": return None  # Disabled for now
-        if rule_name == "function_call":
-            # Use the dedicated function generation method for better type compatibility
-            return self._generate_function_call(context)
-        if rule_name == "comparison_op": 
-            # Only use valid PostgreSQL comparison operators
-            valid_operators = ["=", "<>", "<", "<=", ">", ">=", "LIKE", "ILIKE", "IN", "NOT IN", "IS NULL", "IS NOT NULL"]
-            chosen_op = random.choice(valid_operators)
-            
-            # CRITICAL: Validate that the chosen operator is valid
-            if chosen_op not in valid_operators:
-                # Fallback to a safe operator
-                chosen_op = "="
-            
-            return RawSQL(chosen_op)
-        if rule_name == "aggregate_op":
-            # Only allow actual PostgreSQL aggregate functions
-            valid_aggregates = ["COUNT", "SUM", "AVG", "MIN", "MAX"]
-            chosen_aggregate = random.choice(valid_aggregates)
-            
-            # CRITICAL: Validate that the chosen aggregate is valid
-            if chosen_aggregate not in valid_aggregates:
-                chosen_aggregate = "COUNT"
-            
-            return RawSQL(chosen_aggregate)
-        
-        if rule_name == "cte_name":
-            cte_names = ["cte", "temp_table", "result_set", "intermediate"]
-            return RawSQL(random.choice(cte_names))
-        
-        if rule_name == "join_type":
-            join_types = ["INNER JOIN", "LEFT JOIN", "RIGHT JOIN", "FULL JOIN", "CROSS JOIN"]
-            return RawSQL(random.choice(join_types))
-        
-        if rule_name == "yugabyte_function":
-            yb_functions = ["ybdump", "yb_servers", "yb_servers_rpc", "yb_servers_http", "yb_servers_metrics"]
-            return RawSQL(random.choice(yb_functions))
-        
-        if rule_name == 'aggregate_function':
-            # Generate aggregate function with proper argument
-            if not elements or len(elements) < 4:
-                return None
-            
-            aggregate_op = elements[0]
-            aggregate_arg = elements[2]  # The argument is the 3rd element (index 2)
-            
-            if not aggregate_op or not aggregate_arg:
-                return None
-            
-            try:
-                op_sql = aggregate_op.to_sql() if hasattr(aggregate_op, 'to_sql') else str(aggregate_op)
-                arg_sql = aggregate_arg.to_sql() if hasattr(aggregate_arg, 'to_sql') else str(aggregate_arg)
-                
-                if not op_sql or not arg_sql or arg_sql.strip() == '':
-                    return None
-                
-                # CRITICAL SAFETY CHECK: Ensure the argument is valid and type-compatible
-                if arg_sql.strip() == '' or arg_sql.strip() == '*':
-                    # For non-COUNT functions, never use *
-                    if op_sql.upper() != 'COUNT':
-                        # Generate a safe column argument instead
-                        if context.current_table:
-                            column = self.catalog.get_random_column(context.current_table)
-                            if column:
-                                # Ensure the column type is compatible with the aggregate function
-                                if op_sql.upper() in ['SUM', 'AVG', 'MIN', 'MAX']:
-                                    # These functions need numeric types
-                                    if any(numeric_type in column.data_type.lower() for numeric_type in ['int', 'numeric', 'decimal', 'real', 'double', 'float', 'smallint', 'bigint']):
-                                        return RawSQL(f'{op_sql}("{column.name}")')
-                                    else:
-                                        # For non-numeric columns, use COUNT instead
-                                        return RawSQL(f'COUNT("{column.name}")')
-                                else:
-                                    # For COUNT, any column type is fine
-                                    return RawSQL(f'{op_sql}("{column.name}")')
-                            else:
-                                return None
-                        else:
-                            return None
-                
-                # ADDITIONAL SAFETY CHECK: Validate argument type compatibility
-                if op_sql.upper() in ['SUM', 'AVG', 'MIN', 'MAX']:
-                    # These functions need numeric arguments
-                    if arg_sql.startswith("'") and arg_sql.endswith("'"):
-                        # String literal with numeric function - this will cause errors
-                        # Generate a safe column argument instead
-                        if context.current_table:
-                            column = self.catalog.get_random_column(context.current_table)
-                            if column:
-                                if any(numeric_type in column.data_type.lower() for numeric_type in ['int', 'numeric', 'decimal', 'real', 'double', 'float', 'smallint', 'bigint']):
-                                    return RawSQL(f'{op_sql}("{column.name}")')
-                                else:
-                                    return RawSQL(f'COUNT("{column.name}")')
-                
-                # Final validation: ensure we don't have empty or malformed arguments
-                if not arg_sql or arg_sql.strip() == '' or arg_sql.strip() == '*':
-                    return None
-                
-                return RawSQL(f'{op_sql}({arg_sql})')
-            except Exception:
-                return None
-        
-        if rule_name == 'aggregate_argument':
-            # Generate safe aggregate arguments (never *)
-            if random.random() < 0.7:  # 70% chance of column name
-                if context.current_table:
-                    column = self.catalog.get_random_column(context.current_table)
-                    if column:
-                        return ColumnNode(column)
-                    else:
-                        # Fallback to literal
-                        return self._generate_rule('literal', context)
-                else:
-                    # Fallback to literal
-                    return self._generate_rule('literal', context)
-            else:  # 30% chance of literal
-                return self._generate_rule('literal', context)
-        
-        self.logger.error(f"Unknown terminal rule: {rule_name}"); return None
-
-    def _generate_typed_literal(self, target_type: str) -> str | None:
-        """Generate a literal value of the specified type."""
-        if target_type == 'int':
-            return str(random.randint(1, 1000))
-        elif target_type == 'text':
-            # Generate safe text literals
-            safe_texts = ['test', 'sample', 'data', 'value', 'item', 'product', 'category']
-            return f"'{random.choice(safe_texts)}_{random.randint(1, 999)}'"
-        elif target_type == 'numeric':
-            return str(random.uniform(1.0, 100.0))
-        elif target_type == 'bool':
-            return random.choice(['true', 'false'])
-        elif target_type == 'timestamp' or target_type == 'date' or 'timestamp' in target_type.lower() or 'date' in target_type.lower():
-            # Use proper SQL syntax for YugabyteDB
-            # Don't quote CURRENT_TIMESTAMP - it's a function, not a string
-            # Also handle other timestamp types properly
-            timestamp_options = ['CURRENT_TIMESTAMP', 'CURRENT_DATE', 'NOW()']
-            return RawSQL(random.choice(timestamp_options))
-        else:
-            # For unknown types, use a safe default
-            return "'safe_value'"
+        # Fallback tables for testing
+        return ["products", "orders", "customers", "categories", "information_schema.tables"]
     
-    def _generate_literal_for_column(self, column: Column) -> str:
-        """Generate a literal value that's compatible with the given column type."""
-        data_type = column.data_type.lower()
+    def _get_available_columns(self, context: GenerationContext) -> List[str]:
+        """Get available columns for complex queries."""
+        if context.current_table and context.current_table.columns:
+            return [col.name for col in context.current_table.columns]
         
-        if 'int' in data_type or 'serial' in data_type:
-            return str(random.randint(1, 1000))
-        elif 'text' in data_type or 'varchar' in data_type or 'char' in data_type:
-            safe_texts = ['test', 'sample', 'data', 'value', 'item', 'product', 'category']
-            return f"'{random.choice(safe_texts)}_{random.randint(1, 999)}'"
-        elif 'numeric' in data_type or 'decimal' in data_type or 'real' in data_type or 'double' in data_type or 'float' in data_type:
-            return str(random.uniform(1.0, 100.0))
-        elif 'bool' in data_type:
-            return random.choice(['true', 'false'])
-        elif 'timestamp' in data_type or 'date' in data_type:
-            return RawSQL('CURRENT_TIMESTAMP')
-        else:
-            # For unknown types, use a safe text literal
-            return "'safe_value'"
-    
-    def _generate_safe_literal_for_type(self, target_type: str) -> str:
-        """Generate a safe literal value that matches the target type exactly."""
-        if target_type == 'int' or target_type == 'integer':
-            return str(random.randint(1, 1000))
-        elif target_type == 'text' or target_type == 'varchar' or target_type == 'char':
-            safe_texts = ['test', 'sample', 'data', 'value', 'item', 'product', 'category']
-            return f"'{random.choice(safe_texts)}_{random.randint(1, 999)}'"
-        elif target_type == 'numeric' or target_type == 'decimal' or target_type == 'real' or target_type == 'double':
-            return str(random.uniform(1.0, 100.0))
-        elif target_type == 'bool' or target_type == 'boolean':
-            return random.choice(['true', 'false'])
-        elif target_type == 'timestamp' or target_type == 'date' or 'timestamp' in target_type.lower() or 'date' in target_type.lower():
-            # Use proper SQL syntax for YugabyteDB
-            return 'CURRENT_TIMESTAMP'
-        else:
-            # For unknown types, use a safe text literal
-            return "'safe_value'"
+        # Fallback columns for testing
+        return ["id", "name", "price", "category", "created_date", "stock_count", "description"]
 
-    def _generate_function_call(self, context: GenerationContext) -> SQLNode | None:
-        if not context.current_table:
-            return None
-        
-        # YugabyteDB-safe functions with proper type handling
-        safe_functions = {
-            'length': 'text',      # Only for text types
-            'upper': 'text',       # Only for text types  
-            'lower': 'text',       # Only for text types
-            'trim': 'text',        # Only for text types
-            'abs': 'numeric',      # Only for numeric types
-            'round': 'numeric',    # Only for numeric types
-            'coalesce': 'any',     # Works with any type
-            'nullif': 'any',       # Works with any type
-            'greatest': 'numeric', # Only for numeric types
-            'least': 'numeric'     # Only for numeric types
-        }
-        
-        # Choose a function based on available column types
-        available_functions = []
-        
-        # Check what column types we have
-        text_columns = [col for col in context.current_table.columns if col.data_type.lower() in ['text', 'varchar', 'char']]
-        numeric_columns = [col for col in context.current_table.columns if col.data_type.lower() in ['integer', 'int', 'numeric', 'decimal', 'real', 'double precision']]
-        
-        # Add functions based on available column types
-        if text_columns:
-            available_functions.extend(['length', 'upper', 'lower', 'trim'])
-        
-        if numeric_columns:
-            available_functions.extend(['abs', 'round', 'greatest', 'least'])
-        
-        # Always available functions
-        available_functions.extend(['coalesce', 'nullif'])
-        
-        if not available_functions:
-            return None
-        
-        func_name = random.choice(available_functions)
-        expected_type = safe_functions[func_name]
-        
-        # Generate appropriate argument based on function type
-        if expected_type == 'text':
-            if text_columns:
-                column = random.choice(text_columns)
-                arg = ColumnNode(column)
-            else:
-                # Fallback to string literal
-                arg = RawSQL("'test'")
-        elif expected_type == 'numeric':
-            if numeric_columns:
-                column = random.choice(numeric_columns)
-                arg = ColumnNode(column)
-            else:
-                # Fallback to numeric literal
-                arg = RawSQL("1")
-        else:  # 'any' type
-            # Use any available column
-            column = self.catalog.get_random_column(context.current_table)
-            if column:
-                arg = ColumnNode(column)
-            else:
-                # Fallback to safe literal
-                arg = RawSQL("1")
-        
-        if not arg:
-            return None
+    def generate_yugabytedb_internals_test(self, context: GenerationContext) -> Optional[RawSQL]:
+        """Generate YugabyteDB-specific internals tests that are more likely to trigger bugs."""
+        yb_internals_tests = [
+            # Distributed transaction tests
+            "BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE; SELECT * FROM information_schema.tables; COMMIT",
+            "BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED; SELECT * FROM information_schema.tables; ROLLBACK",
+            "BEGIN; SET TRANSACTION READ ONLY; SELECT * FROM information_schema.tables; COMMIT",
+            "BEGIN; SET TRANSACTION READ WRITE; SELECT * FROM information_schema.tables; COMMIT",
             
-        # CRITICAL: Final validation - ensure the argument is compatible with the function
-        if hasattr(arg, 'column') and arg.column:
-            arg_type = arg.column.data_type.lower()
-            if expected_type == 'text' and arg_type not in ['text', 'varchar', 'char']:
-                # Type mismatch - use a safe fallback
-                if text_columns:
-                    column = random.choice(text_columns)
-                    arg = ColumnNode(column)
-                else:
-                    arg = RawSQL("'test'")
-            elif expected_type == 'numeric' and arg_type not in ['integer', 'int', 'numeric', 'decimal', 'real', 'double precision']:
-                # Type mismatch - use a safe fallback
-                if numeric_columns:
-                    column = random.choice(numeric_columns)
-                    arg = ColumnNode(column)
-                else:
-                    arg = RawSQL("1")
-        else:
-            # For literals, ensure they match the expected type
-            if expected_type == 'text' and not str(arg).startswith("'"):
-                arg = RawSQL("'test'")
-            elif expected_type == 'numeric' and not str(arg).replace('.', '').replace('-', '').isdigit():
-                arg = RawSQL("1")
+            # YugabyteDB-specific consistency tests (using correct parameter values)
+            "SET yb_read_after_commit_visibility = 'relaxed'; SELECT * FROM information_schema.tables",
+            "SET yb_read_after_commit_visibility = 'strict'; SELECT * FROM information_schema.tables",
+            "SET yb_enable_upsert_mode = true; SELECT * FROM information_schema.tables",
+            "SET yb_enable_upsert_mode = false; SELECT * FROM information_schema.tables",
             
-        # FINAL SAFETY CHECK: Ensure we never generate incompatible function calls
-        if hasattr(arg, 'column') and arg.column:
-            arg_type = arg.column.data_type.lower()
-            if expected_type == 'text' and arg_type not in ['text', 'varchar', 'char']:
-                # Ultimate fallback - use a string literal
-                arg = RawSQL("'test'")
-            elif expected_type == 'numeric' and arg_type not in ['integer', 'int', 'numeric', 'decimal', 'real', 'double precision']:
-                # Ultimate fallback - use a numeric literal
-                arg = RawSQL("1")
+            # YugabyteDB system functions that actually exist
+            "SELECT yb_servers()",
+            "SELECT yb_is_local_table(oid) FROM pg_class WHERE relname = 'information_schema.tables'",
+            
+            # Advanced JSON operations with YugabyteDB features
+            "SELECT jsonb_extract_path_text(data, 'key') FROM (SELECT '{\"key\": \"value\"}'::jsonb as data) t",
+            "SELECT jsonb_pretty(data) FROM (SELECT '{\"key\": \"value\"}'::jsonb as data) t",
+            "SELECT jsonb_typeof(data) FROM (SELECT '{\"key\": \"value\"}'::jsonb as data) t",
+            "SELECT data ? 'key' FROM (SELECT '{\"key\": \"value\"}'::jsonb as data) t",
+            "SELECT data @> '{\"key\": \"value\"}' FROM (SELECT '{\"key\": \"value\"}'::jsonb as data) t",
+            "SELECT data <@ '{\"key\": \"value\"}' FROM (SELECT '{\"key\": \"value\"}'::jsonb as data) t",
+            
+            # Array operations with YugabyteDB optimizations (using functions that exist)
+            "SELECT unnest(ARRAY[1,2,3,4,5])",
+            "SELECT array_length(ARRAY[1,2,3,4,5], 1)",
+            "SELECT array_agg(x) FROM generate_series(1,10) x",
+            "SELECT array_to_string(ARRAY['a','b','c'], ',')",
+            "SELECT string_to_array('a,b,c', ',')",
+            "SELECT ARRAY[1,2,3] && ARRAY[2,3,4]",
+            "SELECT ARRAY[1,2,3] @> ARRAY[2,3]",
+            "SELECT ARRAY[1,2,3] <@ ARRAY[1,2,3,4,5]",
+            
+            # Advanced window functions with YugabyteDB optimizations
+            "SELECT *, ROW_NUMBER() OVER (ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, RANK() OVER (ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, DENSE_RANK() OVER (ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, LAG(x, 1) OVER (ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, LEAD(x, 1) OVER (ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, FIRST_VALUE(x) OVER (ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, LAST_VALUE(x) OVER (ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, NTILE(4) OVER (ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, CUME_DIST() OVER (ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, PERCENT_RANK() OVER (ORDER BY x) FROM generate_series(1,10) x",
+            
+            # CTEs with complex operations
+            "WITH RECURSIVE cte AS (SELECT 1 as n UNION ALL SELECT n+1 FROM cte WHERE n < 10) SELECT * FROM cte",
+            "WITH cte1 AS (SELECT generate_series(1,5) as x), cte2 AS (SELECT x*2 as y FROM cte1) SELECT * FROM cte1 JOIN cte2 ON cte1.x = cte2.y/2",
+            "WITH cte AS (SELECT '{\"key\": \"value\"}'::jsonb as data) SELECT jsonb_extract_path_text(data, 'key') FROM cte",
+            
+            # Complex joins with YugabyteDB optimizations
+            "SELECT * FROM information_schema.tables t1 CROSS JOIN information_schema.columns t2 LIMIT 10",
+            "SELECT * FROM information_schema.tables t1 FULL OUTER JOIN information_schema.columns t2 ON t1.table_name = t2.table_name LIMIT 10",
+            "SELECT * FROM information_schema.tables t1 LEFT JOIN information_schema.columns t2 ON t1.table_name = t2.table_name LIMIT 10",
+            "SELECT * FROM information_schema.tables t1 RIGHT JOIN information_schema.columns t2 ON t1.table_name = t2.table_name LIMIT 10",
+            
+            # Subqueries and EXISTS
+            "SELECT * FROM information_schema.tables t1 WHERE EXISTS (SELECT 1 FROM information_schema.columns t2 WHERE t2.table_name = t1.table_name)",
+            "SELECT * FROM information_schema.tables t1 WHERE table_name IN (SELECT DISTINCT table_name FROM information_schema.columns)",
+            "SELECT * FROM information_schema.tables t1 WHERE table_name = ANY (SELECT DISTINCT table_name FROM information_schema.columns)",
+            
+            # Advanced date/time operations
+            "SELECT now(), current_timestamp, current_date, current_time",
+            "SELECT extract(epoch from now()), extract(year from now()), extract(month from now())",
+            "SELECT date_trunc('hour', now()), date_trunc('day', now()), date_trunc('month', now())",
+            "SELECT now() + interval '1 day', now() - interval '1 hour'",
+            "SELECT age(now(), now() - interval '1 year')",
+            
+            # String operations and regex
+            "SELECT regexp_replace('test123', '[0-9]+', 'NUM')",
+            "SELECT regexp_split_to_table('a,b,c,d', ',')",
+            "SELECT split_part('a.b.c.d', '.', 2)",
+            "SELECT 'test' || ' ' || 'string' as concatenated",
+            "SELECT upper('test'), lower('TEST'), initcap('test string')",
+            "SELECT trim(' test '), ltrim(' test'), rtrim('test ')",
+            "SELECT length('test'), char_length('test'), octet_length('test')",
+            
+            # Mathematical and statistical functions
+            "SELECT random(), floor(random() * 100), ceil(random() * 100), round(random() * 100)",
+            "SELECT abs(-10), sign(-10), sign(10), sign(0)",
+            "SELECT greatest(1,2,3,4,5), least(1,2,3,4,5)",
+            "SELECT sqrt(16), power(2,8), exp(1), ln(2.718)",
+            "SELECT sin(0), cos(0), tan(0), asin(0), acos(1), atan(0)",
+            
+            # Type casting and conversions
+            "SELECT '123'::integer, '123.45'::numeric, 'true'::boolean",
+            "SELECT 123::text, 123.45::text, true::text",
+            "SELECT '2024-01-01'::date, '2024-01-01 12:00:00'::timestamp",
+            "SELECT '{\"key\": \"value\"}'::jsonb, ARRAY[1,2,3]::text[]",
+            
+            # YugabyteDB-specific performance hints
+            "SELECT /*+ LEADER_LOCAL */ * FROM information_schema.tables",
+            "SELECT /*+ LEADER_READ */ * FROM information_schema.tables",
+            "SELECT /*+ LEADER_WRITE */ * FROM information_schema.tables",
+            "SELECT /*+ PREFER_LOCAL */ * FROM information_schema.tables",
+            "SELECT /*+ PREFER_REMOTE */ * FROM information_schema.tables",
+            "SELECT /*+ NO_INDEX_SCAN */ * FROM information_schema.tables",
+            "SELECT /*+ INDEX_SCAN */ * FROM information_schema.tables",
+            "SELECT /*+ SEQUENTIAL_SCAN */ * FROM information_schema.tables",
+            
+            # Complex aggregations
+            "SELECT string_agg(table_name, ', ' ORDER BY table_name) FROM information_schema.tables",
+            "SELECT array_agg(table_name ORDER BY table_name) FROM information_schema.tables",
+            "SELECT jsonb_agg(jsonb_build_object('table', table_name)) FROM information_schema.tables",
+            
+            # Lock and transaction tests (removed problematic FOR UPDATE clauses)
+            "SELECT * FROM information_schema.tables",
+            "SELECT * FROM information_schema.tables",
+            "SELECT * FROM information_schema.tables",
+            "SELECT * FROM information_schema.tables",
+            "SELECT * FROM information_schema.tables",
+            "SELECT * FROM information_schema.tables"
+        ]
         
-        # ULTIMATE SAFETY CHECK: If we still have a type mismatch, force a safe literal
-        if hasattr(arg, 'column') and arg.column:
-            arg_type = arg.column.data_type.lower()
-            if expected_type == 'text' and arg_type not in ['text', 'varchar', 'char']:
-                # Force text literal for text functions
-                arg = RawSQL("'safe_text'")
-            elif expected_type == 'numeric' and arg_type not in ['integer', 'int', 'numeric', 'decimal', 'real', 'double precision']:
-                # Force numeric literal for numeric functions
-                arg = RawSQL("1")
+        return RawSQL(random.choice(yb_internals_tests))
+
+    def generate_advanced_yb_queries(self, context: GenerationContext) -> Optional[RawSQL]:
+        """Generate advanced YugabyteDB queries that test internal mechanisms and are more likely to trigger bugs."""
+        advanced_queries = [
+            # Distributed transaction edge cases
+            "BEGIN; SELECT pg_sleep(0.1); SELECT * FROM information_schema.tables; COMMIT",
+            "BEGIN; SELECT pg_sleep(0.1); SELECT * FROM information_schema.tables; ROLLBACK",
+            "BEGIN; SET TRANSACTION ISOLATION LEVEL SERIALIZABLE; SELECT * FROM information_schema.tables; COMMIT",
+            "BEGIN; SET TRANSACTION ISOLATION LEVEL READ COMMITTED; SELECT * FROM information_schema.tables; COMMIT",
+            "BEGIN; SET TRANSACTION ISOLATION LEVEL REPEATABLE READ; SELECT * FROM information_schema.tables; COMMIT",
+            "BEGIN; SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED; SELECT * FROM information_schema.tables; COMMIT",
+            
+            # YugabyteDB consistency and visibility tests (using correct parameter values)
+            "SET yb_read_after_commit_visibility = 'relaxed'; SELECT * FROM information_schema.tables; SET yb_read_after_commit_visibility = 'strict'",
+            "SET yb_enable_upsert_mode = true; SELECT * FROM information_schema.tables; SET yb_enable_upsert_mode = false",
+            "SET yb_enable_expression_pushdown = true; SELECT * FROM information_schema.tables; SET yb_enable_expression_pushdown = false",
+            
+            # Complex JSON operations with YugabyteDB features (using functions that exist)
+            "SELECT jsonb_path_query('{\"key\": \"value\"}'::jsonb, '$.key')",
+            "SELECT jsonb_path_query_array('{\"array\": [1,2,3]}'::jsonb, '$.array[*]')",
+            "SELECT jsonb_path_exists('{\"key\": \"value\"}'::jsonb, '$.key')",
+            "SELECT jsonb_path_match('{\"number\": 42}'::jsonb, '$.number > 40')",
+            "SELECT jsonb_strip_nulls('{\"key\": \"value\", \"null_key\": null}'::jsonb)",
+            "SELECT jsonb_pretty('{\"key\": \"value\", \"nested\": {\"inner\": \"data\"}}'::jsonb)",
+            
+            # Advanced array operations with YugabyteDB features (using functions that exist)
+            "SELECT array_remove(ARRAY[1,2,3,2,4], 2)",
+            "SELECT array_replace(ARRAY[1,2,3,4], 2, 99)",
+            "SELECT array_positions(ARRAY[1,2,3,2,4], 2)",
+            "SELECT ARRAY[1,2,2,3,3,4]",
+            "SELECT array_cat(ARRAY[1,2], ARRAY[3,4])",
+            "SELECT array_append(ARRAY[1,2,3], 4)",
+            "SELECT array_prepend(0, ARRAY[1,2,3])",
+            "SELECT array_length(ARRAY[1,2,3,4,5], 1)",
+            "SELECT array_to_string(ARRAY['a','b','c'], ',')",
+            "SELECT string_to_array('a,b,c', ',')",
+            "SELECT unnest(ARRAY[1,2,3,4,5])",
+            
+            # Advanced window functions with YugabyteDB optimizations
+            "SELECT *, ROW_NUMBER() OVER (PARTITION BY x % 2 ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, RANK() OVER (PARTITION BY x % 3 ORDER BY x) FROM generate_series(1,15) x",
+            "SELECT *, DENSE_RANK() OVER (PARTITION BY x % 4 ORDER BY x) FROM generate_series(1,20) x",
+            "SELECT *, LAG(x, 1, 0) OVER (ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, LEAD(x, 1, 999) OVER (ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, FIRST_VALUE(x) OVER (PARTITION BY x % 2 ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, LAST_VALUE(x) OVER (PARTITION BY x % 2 ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM generate_series(1,10) x",
+            "SELECT *, NTILE(3) OVER (PARTITION BY x % 2 ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, CUME_DIST() OVER (ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, PERCENT_RANK() OVER (ORDER BY x) FROM generate_series(1,10) x",
+            
+            # Recursive CTEs with complex logic
+            "WITH RECURSIVE fibonacci AS (SELECT 1 as n, 1 as fib UNION ALL SELECT n+1, fib + LAG(fib, 1, 0) OVER (ORDER BY n) FROM fibonacci WHERE n < 20) SELECT * FROM fibonacci",
+            "WITH RECURSIVE factorial AS (SELECT 1 as n, 1 as fact UNION ALL SELECT n+1, fact * (n+1) FROM factorial WHERE n < 10) SELECT * FROM factorial",
+            "WITH RECURSIVE collatz AS (SELECT 27 as n, 27 as seq UNION ALL SELECT n/2, seq FROM collatz WHERE n % 2 = 0 AND n > 1 UNION ALL SELECT 3*n+1, seq FROM collatz WHERE n % 2 = 1 AND n > 1) SELECT * FROM collatz WHERE n = 1",
+            
+            # Complex joins with YugabyteDB optimizations
+            "SELECT * FROM information_schema.tables t1 CROSS JOIN information_schema.columns t2 CROSS JOIN information_schema.table_privileges t3 LIMIT 5",
+            "SELECT * FROM information_schema.tables t1 FULL OUTER JOIN information_schema.columns t2 ON t1.table_name = t2.table_name FULL OUTER JOIN information_schema.table_privileges t3 ON t1.table_name = t3.table_name LIMIT 5",
+            "SELECT * FROM information_schema.tables t1 LEFT JOIN information_schema.columns t2 ON t1.table_name = t2.table_name LEFT JOIN information_schema.table_privileges t3 ON t1.table_name = t3.table_name LIMIT 5",
+            "SELECT * FROM information_schema.tables t1 RIGHT JOIN information_schema.columns t2 ON t1.table_name = t2.table_name RIGHT JOIN information_schema.table_privileges t3 ON t1.table_name = t3.table_name LIMIT 5",
+            
+            # Advanced subqueries and EXISTS
+            "SELECT * FROM information_schema.tables t1 WHERE EXISTS (SELECT 1 FROM information_schema.columns t2 WHERE t2.table_name = t1.table_name AND EXISTS (SELECT 1 FROM information_schema.table_privileges t3 WHERE t3.table_name = t2.table_name))",
+            "SELECT * FROM information_schema.tables t1 WHERE table_name IN (SELECT DISTINCT table_name FROM information_schema.columns WHERE table_name IN (SELECT DISTINCT table_name FROM information_schema.table_privileges))",
+            "SELECT * FROM information_schema.tables t1 WHERE table_name = ANY (SELECT DISTINCT table_name FROM information_schema.columns WHERE table_name = ANY (SELECT DISTINCT table_name FROM information_schema.table_privileges))",
+            "SELECT * FROM information_schema.tables t1 WHERE table_name = ALL (SELECT DISTINCT table_name FROM information_schema.columns WHERE table_name = ALL (SELECT DISTINCT table_name FROM information_schema.table_privileges))",
+            
+            # Advanced date/time operations with YugabyteDB
+            "SELECT now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'America/New_York', now() AT TIME ZONE 'Asia/Tokyo'",
+            "SELECT extract(epoch from now()), extract(year from now()), extract(month from now()), extract(day from now()), extract(hour from now()), extract(minute from now()), extract(second from now())",
+            "SELECT extract(dow from now()), extract(doy from now())",
+            "SELECT date_trunc('hour', now()), date_trunc('day', now()), date_trunc('week', now())",
+            "SELECT date_trunc('month', now()), date_trunc('quarter', now()), date_trunc('year', now())",
+            "SELECT now() + interval '1 day', now() + interval '1 week', now() + interval '1 month'",
+            "SELECT now() - interval '1 day', now() - interval '1 week', now() - interval '1 month'",
+            "SELECT age(now(), now() - interval '1 year'), age(now(), now() - interval '1 month')",
+            "SELECT make_date(2024, 1, 1), make_time(12, 30, 45), make_timestamp(2024, 1, 1, 12, 30, 45)",
+            
+            # Advanced string operations and regex with YugabyteDB
+            "SELECT regexp_replace('test123test456', '[0-9]+', 'NUM', 'g')",
+            "SELECT regexp_split_to_table('a,b,c,d,e,f', ',')",
+            "SELECT split_part('a.b.c.d.e.f', '.', 3)",
+            "SELECT 'test' || ' ' || 'string' || ' ' || 'concatenation' as concatenated",
+            "SELECT upper('test'), lower('TEST'), initcap('test string with multiple words')",
+            "SELECT trim(' test '), ltrim(' test'), rtrim('test ')",
+            "SELECT length('test'), char_length('test'), octet_length('test')",
+            "SELECT substring('test string' from 1 for 4), substring('test string' from 6)",
+            "SELECT position('st' in 'test string'), strpos('test string', 'st')",
+            "SELECT overlay('test string' placing 'XX' from 2 for 2)",
+            
+            # Mathematical and statistical functions with YugabyteDB
+            "SELECT random(), floor(random() * 100), ceil(random() * 100), round(random() * 100)",
+            "SELECT abs(-10), sign(-10), sign(10), sign(0)",
+            "SELECT greatest(1,2,3,4,5), least(1,2,3,4,5)",
+            "SELECT sqrt(16), power(2,8), exp(1), ln(2.718), log(10, 100)",
+            "SELECT sin(0), cos(0), tan(0), asin(0), acos(1), atan(0)",
+            "SELECT pi(), degrees(pi()), radians(180)",
+            "SELECT factorial(5), gcd(12, 18), lcm(12, 18)",
+            
+            # Advanced type casting and conversions
+            "SELECT '123'::integer, '123.45'::numeric, 'true'::boolean, '2024-01-01'::date",
+            "SELECT 123::text, 123.45::text, true::text, '2024-01-01'::text",
+            "SELECT '2024-01-01'::date, '2024-01-01 12:00:00'::timestamp, '2024-01-01 12:00:00+00'::timestamptz",
+            "SELECT '{\"key\": \"value\"}'::jsonb, ARRAY[1,2,3]::text[], 'test'::varchar(10)",
+            "SELECT '123.45'::decimal(5,2), '123.45'::real, '123.45'::double precision",
+            "SELECT 'test'::char(10), 'test'::varchar(10), 'test'::text",
+            "SELECT '192.168.1.1'::inet, '192.168.1.0/24'::cidr",
+            "SELECT '10101010'::bit(8), '10101010'::bit varying(8)",
+            
+            # YugabyteDB-specific performance hints and optimizations
+            "SELECT /*+ LEADER_LOCAL */ * FROM information_schema.tables",
+            "SELECT /*+ LEADER_READ */ * FROM information_schema.tables",
+            "SELECT /*+ LEADER_WRITE */ * FROM information_schema.tables",
+            "SELECT /*+ PREFER_LOCAL */ * FROM information_schema.tables",
+            "SELECT /*+ PREFER_REMOTE */ * FROM information_schema.tables",
+            "SELECT /*+ NO_INDEX_SCAN */ * FROM information_schema.tables",
+            "SELECT /*+ INDEX_SCAN */ * FROM information_schema.tables",
+            "SELECT /*+ SEQUENTIAL_SCAN */ * FROM information_schema.tables",
+            
+            # Complex aggregations with YugabyteDB features
+            "SELECT string_agg(table_name, ', ' ORDER BY table_name) FROM information_schema.tables",
+            "SELECT array_agg(table_name ORDER BY table_name) FROM information_schema.tables",
+            "SELECT jsonb_agg(jsonb_build_object('table', table_name)) FROM information_schema.tables",
+            "SELECT jsonb_object_agg(table_name, table_type) FROM information_schema.tables",
+            "SELECT jsonb_build_object('count', COUNT(*), 'tables', array_agg(table_name)) FROM information_schema.tables",
+            
+            # YugabyteDB-specific system queries (using functions that exist)
+            "SELECT yb_servers()",
+            "SELECT yb_is_local_table(oid) FROM pg_class WHERE relname = 'information_schema.tables'",
+            
+            # Advanced constraint and index tests
+            "SELECT conname, contype, pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = (SELECT oid FROM pg_class WHERE relname = 'information_schema.tables')",
+            "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'information_schema.tables'",
+            "SELECT schemaname, tablename, indexname, indexdef FROM pg_indexes WHERE tablename LIKE '%tables%'",
+            
+            # Performance and statistics queries
+            "SELECT schemaname, tablename, attname, n_distinct, correlation FROM pg_stats WHERE tablename = 'information_schema.tables'",
+            "SELECT schemaname, tablename, attname, most_common_vals, most_common_freqs FROM pg_stats WHERE tablename = 'information_schema.tables'",
+            "SELECT schemaname, tablename, attname, histogram_bounds FROM pg_stats WHERE tablename = 'information_schema.tables'"
+        ]
         
-        # NUCLEAR OPTION: Final validation that we never generate incompatible function calls
-        if hasattr(arg, 'column') and arg.column:
-            arg_type = arg.column.data_type.lower()
-            if expected_type == 'text' and arg_type not in ['text', 'varchar', 'char']:
-                # Force text literal for text functions - no exceptions, no fallbacks
-                arg = RawSQL("'safe_text'")
-            elif expected_type == 'numeric' and arg_type not in ['integer', 'int', 'numeric', 'decimal', 'real', 'double precision']:
-                # Force numeric literal for numeric functions - no exceptions, no fallbacks
-                arg = RawSQL("1")
+        return RawSQL(random.choice(advanced_queries))
+
+    def generate_yb_distributed_tests(self, context: GenerationContext) -> Optional[RawSQL]:
+        """Generate YugabyteDB distributed database tests that stress internal mechanisms."""
+        distributed_tests = [
+            # Multi-tablet operations (using columns that actually exist)
+            "SELECT table_name, table_type, COUNT(*) FROM information_schema.tables GROUP BY table_name, table_type",
+            "SELECT table_schema, table_name FROM information_schema.tables ORDER BY table_schema, table_name",
+            "SELECT DISTINCT table_schema FROM information_schema.tables ORDER BY table_schema",
+            "SELECT DISTINCT table_type FROM information_schema.tables ORDER BY table_type",
+            
+            # Cross-tablet joins (using valid columns)
+            "SELECT t1.table_name, t2.column_name FROM information_schema.tables t1 JOIN information_schema.columns t2 ON t1.table_name = t2.table_name WHERE t1.table_schema != t2.table_schema",
+            "SELECT t1.table_name, t2.column_name FROM information_schema.tables t1 CROSS JOIN information_schema.columns t2 WHERE t1.table_schema != t2.table_schema LIMIT 10",
+            
+            # Distributed transaction stress tests
+            "BEGIN; SELECT pg_sleep(0.01); SELECT * FROM information_schema.tables WHERE table_name = (SELECT MIN(table_name) FROM information_schema.tables); COMMIT",
+            "BEGIN; SELECT pg_sleep(0.01); SELECT * FROM information_schema.tables WHERE table_name = (SELECT MAX(table_name) FROM information_schema.tables); COMMIT",
+            "BEGIN; SELECT pg_sleep(0.01); SELECT * FROM information_schema.tables WHERE table_name IN (SELECT table_name FROM information_schema.tables ORDER BY table_name LIMIT 3); COMMIT",
+            
+            # Consistency level tests (using correct parameter values)
+            "SET yb_read_after_commit_visibility = 'relaxed'; SELECT * FROM information_schema.tables WHERE table_name = 'information_schema.tables'; SET yb_read_after_commit_visibility = 'strict'",
+            "SET yb_enable_upsert_mode = true; SELECT * FROM information_schema.tables WHERE table_name = 'information_schema.tables'; SET yb_enable_upsert_mode = false",
+            "SET yb_enable_expression_pushdown = true; SELECT * FROM information_schema.tables WHERE table_name = 'information_schema.tables'; SET yb_enable_expression_pushdown = false",
+            
+            # Tablet splitting and movement simulation
+            "SELECT table_schema, table_name, COUNT(*) as row_count FROM information_schema.tables GROUP BY table_schema, table_name HAVING COUNT(*) > 0 ORDER BY table_schema, table_name",
+            "SELECT table_name FROM information_schema.tables WHERE table_name = (SELECT table_name FROM information_schema.tables ORDER BY table_name LIMIT 1)",
+            "SELECT table_name FROM information_schema.tables WHERE table_name = (SELECT table_name FROM information_schema.tables ORDER BY table_name DESC LIMIT 1)",
+            
+            # Leader election and failover tests
+            "SELECT /*+ LEADER_LOCAL */ table_name, table_type FROM information_schema.tables WHERE table_name = 'information_schema.tables'",
+            "SELECT /*+ LEADER_READ */ table_name, table_type FROM information_schema.tables WHERE table_name = 'information_schema.tables'",
+            "SELECT /*+ LEADER_WRITE */ table_name, table_type FROM information_schema.tables WHERE table_name = 'information_schema.tables'",
+            "SELECT /*+ PREFER_LOCAL */ table_name, table_type FROM information_schema.tables WHERE table_name = 'information_schema.tables'",
+            "SELECT /*+ PREFER_REMOTE */ table_name, table_type FROM information_schema.tables WHERE table_name = 'information_schema.tables'",
+            
+            # Distributed aggregation tests
+            "SELECT table_schema, COUNT(*) as schema_count FROM information_schema.tables GROUP BY table_schema ORDER BY table_schema",
+            "SELECT table_type, COUNT(*) as type_count FROM information_schema.tables GROUP BY table_type ORDER BY table_type",
+            "SELECT table_schema, table_type, COUNT(*) as count FROM information_schema.tables GROUP BY table_schema, table_type ORDER BY table_schema, table_type",
+            
+            # Cross-shard operations
+            "SELECT t1.table_schema as t1_schema, t2.table_schema as t2_schema, COUNT(*) FROM information_schema.tables t1 CROSS JOIN information_schema.columns t2 WHERE t1.table_schema != t2.table_schema GROUP BY t1.table_schema, t2.table_schema LIMIT 5",
+            "SELECT t1.table_schema, t2.table_schema, t1.table_name, t2.column_name FROM information_schema.tables t1 JOIN information_schema.columns t2 ON t1.table_name = t2.table_name WHERE t1.table_schema != t2.table_schema LIMIT 5",
+            
+            # Distributed locking tests (removed problematic FOR UPDATE clauses)
+            "SELECT * FROM information_schema.tables WHERE table_name = 'information_schema.tables'",
+            "SELECT * FROM information_schema.tables WHERE table_name = 'information_schema.tables'",
+            "SELECT * FROM information_schema.tables WHERE table_name = 'information_schema.tables'",
+            "SELECT * FROM information_schema.tables WHERE table_name = 'information_schema.tables'",
+            
+            # YugabyteDB system catalog queries (using functions that exist)
+            "SELECT yb_is_local_table(oid) FROM pg_class WHERE relname = 'information_schema.tables'",
+            
+            # Distributed statistics and monitoring
+            "SELECT table_schema, COUNT(*) as row_count, AVG(LENGTH(table_name)) as avg_name_length FROM information_schema.tables GROUP BY table_schema ORDER BY table_schema",
+            "SELECT table_name, LENGTH(table_name) as name_length FROM information_schema.tables WHERE table_name = (SELECT table_name FROM information_schema.tables ORDER BY table_name LIMIT 1) ORDER BY table_name",
+            
+            # Complex distributed queries
+            "WITH schema_stats AS (SELECT table_schema, COUNT(*) as count FROM information_schema.tables GROUP BY table_schema) SELECT table_schema, SUM(count) as total_rows FROM schema_stats GROUP BY table_schema ORDER BY table_schema",
+            "WITH table_info AS (SELECT table_schema, table_name FROM information_schema.tables) SELECT t1.table_schema, t1.table_name, t2.column_name FROM table_info t1 JOIN information_schema.columns t2 ON t1.table_name = t2.table_name WHERE t1.table_schema != t2.table_schema LIMIT 5",
+            
+            # YugabyteDB-specific performance tests
+            "SELECT /*+ INDEX_SCAN */ table_name, table_type FROM information_schema.tables WHERE table_name = 'information_schema.tables'",
+            "SELECT /*+ SEQUENTIAL_SCAN */ table_name, table_type FROM information_schema.tables WHERE table_name = 'information_schema.tables'",
+            "SELECT /*+ NO_INDEX_SCAN */ table_name, table_type FROM information_schema.tables WHERE table_name = 'information_schema.tables'",
+            
+            # Distributed transaction isolation tests
+            "BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT table_name, table_type FROM information_schema.tables WHERE table_name = 'information_schema.tables'; COMMIT",
+            "BEGIN ISOLATION LEVEL READ COMMITTED; SELECT table_name, table_type FROM information_schema.tables WHERE table_name = 'information_schema.tables'; COMMIT",
+            "BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT table_name, table_type FROM information_schema.tables WHERE table_name = 'information_schema.tables'; COMMIT",
+            "BEGIN ISOLATION LEVEL READ UNCOMMITTED; SELECT table_name, table_type FROM information_schema.tables WHERE table_name = 'information_schema.tables'; COMMIT"
+        ]
         
-        # NUCLEAR OPTION: Final validation that we never generate incompatible function calls
-        # This is the last line of defense - we will never allow a function to be called with incompatible types
-        if hasattr(arg, 'column') and arg.column:
-            arg_type = arg.column.data_type.lower()
-            if expected_type == 'text' and arg_type not in ['text', 'varchar', 'char']:
-                # Force text literal for text functions - no exceptions, no fallbacks, no mercy
-                arg = RawSQL("'safe_text'")
-            elif expected_type == 'numeric' and arg_type not in ['integer', 'int', 'numeric', 'decimal', 'real', 'double precision']:
-                # Force numeric literal for numeric functions - no exceptions, no fallbacks, no mercy
-                arg = RawSQL("1")
+        return RawSQL(random.choice(distributed_tests))
+
+    def generate_yb_data_type_tests(self, context: GenerationContext) -> Optional[RawSQL]:
+        """Generate comprehensive YugabyteDB data type and function tests."""
+        data_type_tests = [
+            # YugabyteDB-specific data types
+            "SELECT '{\"key\": \"value\", \"array\": [1,2,3], \"nested\": {\"inner\": \"data\"}}'::jsonb",
+            "SELECT ARRAY[1,2,3,4,5]::integer[]",
+            "SELECT ARRAY['text1', 'text2', 'text3']::text[]",
+            "SELECT ARRAY[1.1, 2.2, 3.3]::numeric[]",
+            "SELECT ARRAY[true, false, true]::boolean[]",
+            "SELECT ARRAY['2024-01-01', '2024-01-02']::date[]",
+            "SELECT ARRAY['12:00:00', '13:00:00']::time[]",
+            "SELECT ARRAY['2024-01-01 12:00:00', '2024-01-01 13:00:00']::timestamp[]",
+            
+            # UUID and special types
+            "SELECT gen_random_uuid()::uuid",
+            "SELECT '192.168.1.1'::inet",
+            "SELECT '192.168.1.0/24'::cidr",
+            "SELECT point(1, 2)",
+            "SELECT line(point(0,0), point(1,1))",
+            "SELECT circle(point(0,0), 5)",
+            "SELECT '10101010'::bit(8)",
+            "SELECT '10101010'::bit varying(8)",
+            "SELECT 'test string'::tsvector",
+            "SELECT 'test & string'::tsquery",
+            
+            # YugabyteDB JSON functions
+            "SELECT jsonb_build_object('id', 1, 'name', 'test', 'active', true)",
+            "SELECT jsonb_build_array(1, 'text', true, null)",
+            "SELECT jsonb_extract_path('{\"a\": {\"b\": {\"c\": 1}}}'::jsonb, 'a', 'b', 'c')",
+            "SELECT jsonb_extract_path_text('{\"a\": {\"b\": {\"c\": \"value\"}}}'::jsonb, 'a', 'b', 'c')",
+            "SELECT jsonb_insert('{\"a\": 1}'::jsonb, '{b}', '2'::jsonb)",
+            "SELECT jsonb_set('{\"a\": 1}'::jsonb, '{b}', '2'::jsonb)",
+            "SELECT jsonb_strip_nulls('{\"a\": 1, \"b\": null}'::jsonb)",
+            "SELECT jsonb_pretty('{\"a\": 1, \"b\": {\"c\": 2}}'::jsonb)",
+            
+            # YugabyteDB Array functions
+            "SELECT array_append(ARRAY[1,2,3], 4)",
+            "SELECT array_prepend(0, ARRAY[1,2,3])",
+            "SELECT array_cat(ARRAY[1,2], ARRAY[3,4])",
+            "SELECT array_remove(ARRAY[1,2,3,2,4], 2)",
+            "SELECT array_replace(ARRAY[1,2,3,4], 2, 99)",
+            "SELECT array_positions(ARRAY[1,2,3,2,4], 2)",
+            "SELECT ARRAY[1,2,2,3,3,4]",
+            "SELECT ARRAY[3,1,4,1,5,9,2,6]",
+            "SELECT array_length(ARRAY[1,2,3,4,5], 1)",
+            "SELECT array_to_string(ARRAY['a','b','c'], ',')",
+            "SELECT string_to_array('a,b,c', ',')",
+            "SELECT unnest(ARRAY[1,2,3,4,5])",
+            
+            # YugabyteDB String functions
+            "SELECT regexp_replace('test123test456', '[0-9]+', 'NUM', 'g')",
+            "SELECT regexp_split_to_table('a,b,c,d,e,f', ',')",
+            "SELECT split_part('a.b.c.d.e.f', '.', 3)",
+            "SELECT 'test' || ' ' || 'string' || ' ' || 'concatenation' as concatenated",
+            "SELECT upper('test'), lower('TEST'), initcap('test string with multiple words')",
+            "SELECT trim(' test '), ltrim(' test'), rtrim('test ')",
+            "SELECT length('test'), char_length('test'), octet_length('test')",
+            "SELECT substring('test string' from 1 for 4), substring('test string' from 6)",
+            "SELECT position('st' in 'test string'), strpos('test string', 'st')",
+            "SELECT overlay('test string' placing 'XX' from 2 for 2)",
+            
+            # YugabyteDB Mathematical functions
+            "SELECT random(), floor(random() * 100), ceil(random() * 100), round(random() * 100)",
+            "SELECT abs(-10), sign(-10), sign(10), sign(0)",
+            "SELECT greatest(1,2,3,4,5), least(1,2,3,4,5)",
+            "SELECT sqrt(16), power(2,8), exp(1), ln(2.718), log(10, 100)",
+            "SELECT sin(0), cos(0), tan(0), asin(0), acos(1), atan(0)",
+            "SELECT pi(), degrees(pi()), radians(180)",
+            "SELECT factorial(5), gcd(12, 18), lcm(12, 18)",
+            "SELECT mod(17, 5), div(17, 5)",
+            
+            # YugabyteDB Date/Time functions
+            "SELECT now(), current_timestamp, current_date, current_time",
+            "SELECT extract(epoch from now()), extract(year from now()), extract(month from now())",
+            "SELECT extract(day from now()), extract(hour from now()), extract(minute from now())",
+            "SELECT extract(second from now()), extract(dow from now()), extract(doy from now())",
+            "SELECT date_trunc('hour', now()), date_trunc('day', now()), date_trunc('week', now())",
+            "SELECT date_trunc('month', now()), date_trunc('quarter', now()), date_trunc('year', now())",
+            "SELECT now() + interval '1 day', now() + interval '1 week', now() + interval '1 month'",
+            "SELECT now() - interval '1 day', now() - interval '1 week', now() - interval '1 month'",
+            "SELECT age(now(), now() - interval '1 year'), age(now(), now() - interval '1 month')",
+            "SELECT make_date(2024, 1, 1), make_time(12, 30, 45), make_timestamp(2024, 1, 1, 12, 30, 45)",
+            
+            # YugabyteDB Window functions
+            "SELECT *, ROW_NUMBER() OVER (ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, RANK() OVER (ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, DENSE_RANK() OVER (ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, LAG(x, 1, 0) OVER (ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, LEAD(x, 1, 999) OVER (ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, FIRST_VALUE(x) OVER (ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, LAST_VALUE(x) OVER (ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM generate_series(1,10) x",
+            "SELECT *, NTILE(3) OVER (ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, CUME_DIST() OVER (ORDER BY x) FROM generate_series(1,10) x",
+            "SELECT *, PERCENT_RANK() OVER (ORDER BY x) FROM generate_series(1,10) x",
+            
+            # YugabyteDB Aggregation functions
+            "SELECT string_agg(table_name, ', ' ORDER BY table_name) FROM information_schema.tables",
+            "SELECT array_agg(table_name ORDER BY table_name) FROM information_schema.tables",
+            "SELECT jsonb_agg(jsonb_build_object('table', table_name)) FROM information_schema.tables",
+            "SELECT jsonb_object_agg(table_name, table_type) FROM information_schema.tables",
+            "SELECT jsonb_build_object('count', COUNT(*), 'tables', array_agg(table_name)) FROM information_schema.tables",
+            
+            # YugabyteDB Type casting and conversions
+            "SELECT '123'::integer, '123.45'::numeric, 'true'::boolean, '2024-01-01'::date",
+            "SELECT 123::text, 123.45::text, true::text, '2024-01-01'::text",
+            "SELECT '2024-01-01'::date, '2024-01-01 12:00:00'::timestamp, '2024-01-01 12:00:00+00'::timestamptz",
+            "SELECT '{\"key\": \"value\"}'::jsonb, ARRAY[1,2,3]::text[], 'test'::varchar(10)",
+            "SELECT '123.45'::decimal(5,2), '123.45'::real, '123.45'::double precision",
+            "SELECT 'test'::char(10), 'test'::varchar(10), 'test'::text",
+            "SELECT '192.168.1.1'::inet, '192.168.1.0/24'::cidr",
+            "SELECT '10101010'::bit(8), '10101010'::bit varying(8)"
+        ]
         
-        return SequenceNode([
-            RawSQL(func_name),
-            RawSQL("("),
-            arg,
-            RawSQL(")")
-        ])
+        return RawSQL(random.choice(data_type_tests))

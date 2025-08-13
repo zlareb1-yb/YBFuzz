@@ -249,8 +249,5 @@ logging:
 - Add unit tests for new features
 - Update documentation for changes
 
-## License
-This project is licensed under the MIT License - see the LICENSE file for details.
-
 ## Support
 For questions and support, please refer to the project documentation or create an issue in the repository.

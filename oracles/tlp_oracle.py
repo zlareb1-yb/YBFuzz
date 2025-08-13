@@ -3,334 +3,147 @@
 # version is AST-aware for robust and precise predicate analysis.
 
 import logging
-import random
-import re
-from typing import Union, Optional, List, Tuple, Any
+from typing import Dict, Any, Optional
 from .base_oracle import BaseOracle
-from core.generator import SQLNode, WhereClauseNode, SelectNode, SequenceNode
-from utils.db_executor import DBExecutor
 
 class TLOracle(BaseOracle):
-    """
-    Ternary Logic Partitioning (TLP) Oracle for detecting logical bugs.
+    """Ternary Logic Partitioning Oracle for detecting logic bugs."""
     
-    TLP partitions a query into three partitioning queries, whose results are composed
-    and compared to the original query's result set. A mismatch indicates a bug in the DBMS.
-    
-    This technique can detect bugs in advanced features such as aggregate functions,
-    JOINs, subqueries, and complex expressions.
-    """
-    
-    def __init__(self, db_executor: DBExecutor):
-        super().__init__(db_executor)
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
         self.logger = logging.getLogger(__name__)
-        self.name = "TLPOracle"
-        
-    def check(self, sql_query: str) -> Tuple[bool, Optional[str], Optional[str]]:
-        """
-        Check for logical bugs using TLP technique.
-        
-        Args:
-            sql_query: The SQL query to test
-            
-        Returns:
-            Tuple of (bug_found, bug_description, reproduction_query)
-        """
-        try:
-            # Only test SELECT queries
-            if not self._is_select_query(sql_query):
-                return False, None, None
-            
-            # Execute the original query
-            original_result = self.db_executor.execute_query(sql_query)
-            if not original_result.success:
-                return False, None, None
-            
-            # Generate TLP partitioning queries
-            tlp_queries = self._generate_tlp_queries(sql_query)
-            if not tlp_queries:
-                return False, None, None
-            
-            # Execute TLP queries and compose results
-            tlp_result = self._execute_tlp_queries(tlp_queries)
-            if not tlp_result.success:
-                return False, None, None
-            
-            # Compare results
-            if self._compare_results(original_result, tlp_result):
-                return False, None, None
-            
-            # Bug detected!
-            bug_description = f"TLP Bug: Query result mismatch between original and TLP partitioned queries"
-            reproduction_query = self._create_reproduction_query(sql_query, tlp_queries)
-            
-            return True, bug_description, reproduction_query
-            
-        except Exception as e:
-            self.logger.error(f"TLP Oracle error: {e}")
-            return False, None, None
     
-    def check_for_bugs(self, sql_query: str) -> Tuple[bool, str, Any]:
-        """
-        Check for TLP bugs in the given SQL query.
-        
-        Returns:
-            Tuple of (bug_found, bug_description, bug_context)
-        """
+    def check_for_bugs(self, sql_query: str) -> Optional[Dict[str, Any]]:
+        """Check for logic bugs using TLP technique."""
         try:
             if not self.can_check(sql_query):
-                return False, None, None
+                return None
             
-            # Execute the original query
-            original_result = self.db_executor.execute_query(sql_query, fetch_results=True)
-            if not original_result.success:
-                return False, None, None
+            # Generate TLP partitions
+            tlp_partitions = self._generate_tlp_partitions(sql_query)
+            if not tlp_partitions:
+                return None
             
-            # Generate TLP partitioning queries
-            tlp_queries = self._generate_tlp_queries(sql_query)
-            if not tlp_queries:
-                return False, None, None
+            # Execute original query
+            original_result = self._execute_query(sql_query)
+            if original_result is None:
+                return None
             
-            # Execute TLP queries
-            tlp_results = self._execute_tlp_queries(tlp_queries)
-            if not tlp_results:
-                return False, None, None
+            # Execute TLP partitions
+            partition_results = []
+            for i, partition_query in enumerate(tlp_partitions):
+                try:
+                    result = self._execute_query(partition_query)
+                    partition_results.append({
+                        'partition': i + 1,
+                        'query': partition_query,
+                        'result': result
+                    })
+                except Exception as e:
+                    self.logger.warning(f"TLP partition {i + 1} failed to execute: {partition_query}")
+                    self.logger.warning(f"Error: {e}")
+                    continue
             
             # Check for TLP bugs
-            bug_found, bug_description = self._check_tlp_bug(original_result, tlp_results, tlp_queries)
+            if self._check_tlp_bug(original_result, partition_results):
+                return self._create_bug_report(sql_query, original_result, partition_results)
             
-            if bug_found:
-                # Create reproduction context
-                reproduction_context = self._create_reproduction_context(sql_query, tlp_queries)
-                return True, bug_description, reproduction_context
-            
-            return False, None, None
+            return None
             
         except Exception as e:
-            self.logger.error(f"Error in TLP check: {e}")
-            return False, None, None
+            self.logger.error(f"Error in TLP oracle: {e}")
+            return None
     
-    def _is_select_query(self, sql_query: str) -> bool:
-        """Check if the query is a SELECT statement."""
-        return sql_query.strip().upper().startswith("SELECT")
-    
-    def _generate_tlp_queries(self, original_query: str) -> List[str]:
-        """Generate TLP partitioning queries."""
+    def _generate_tlp_partitions(self, sql_query: str) -> list:
+        """Generate TLP partition queries."""
         try:
-            # Remove any trailing semicolon from the original query
-            clean_query = original_query.rstrip(';').strip()
+            # Simple TLP partitioning: add WHERE TRUE, WHERE FALSE, WHERE NULL
+            partitions = []
             
-            # Check if the query already has a WHERE clause
-            if 'WHERE' in clean_query.upper():
-                # If it has WHERE, we need to insert AND conditions before any LIMIT clause
-                # Find the position of LIMIT if it exists
-                limit_pos = clean_query.upper().find('LIMIT')
-                
-                if limit_pos != -1:
-                    # Query has both WHERE and LIMIT, insert AND before LIMIT
-                    before_limit = clean_query[:limit_pos].strip()
-                    after_limit = clean_query[limit_pos:].strip()
-                    
-                    tlp_queries = [
-                        f"{before_limit} AND TRUE {after_limit}",
-                        f"{before_limit} AND FALSE {after_limit}", 
-                        f"{before_limit} AND NULL {after_limit}"
-                    ]
-                else:
-                    # Query has WHERE but no LIMIT, just append AND conditions
-                    tlp_queries = [
-                        f"{clean_query} AND TRUE",
-                        f"{clean_query} AND FALSE", 
-                        f"{clean_query} AND NULL"
-                    ]
-            else:
-                # If no WHERE clause, we need to insert WHERE in the correct position
-                # SQL order: SELECT -> FROM -> WHERE -> GROUP BY -> HAVING -> ORDER BY -> LIMIT
-                
-                # Find the position of FROM
-                from_pos = clean_query.upper().find('FROM')
-                if from_pos == -1:
-                    # Fallback if FROM not found
-                    return [
-                        "SELECT 1 WHERE TRUE",
-                        "SELECT 1 WHERE FALSE",
-                        "SELECT 1 WHERE NULL"
-                    ]
-                
-                # Find the position of GROUP BY, HAVING, ORDER BY, LIMIT
-                group_by_pos = clean_query.upper().find('GROUP BY')
-                having_pos = clean_query.upper().find('HAVING')
-                order_by_pos = clean_query.upper().find('ORDER BY')
-                limit_pos = clean_query.upper().find('LIMIT')
-                
-                # Determine where to insert WHERE clause
-                insert_pos = from_pos
-                
-                # Find the end of the FROM clause (look for next clause)
-                next_clause_pos = len(clean_query)
-                for clause, pos in [('GROUP BY', group_by_pos), ('HAVING', having_pos), 
-                                   ('ORDER BY', order_by_pos), ('LIMIT', limit_pos)]:
-                    if pos != -1 and pos > from_pos:
-                        next_clause_pos = min(next_clause_pos, pos)
-                
-                # Insert WHERE after FROM but before the next clause
-                before_where = clean_query[:next_clause_pos].strip()
-                after_where = clean_query[next_clause_pos:].strip()
-                
-                tlp_queries = [
-                    f"{before_where} WHERE TRUE {after_where}",
-                    f"{before_where} WHERE FALSE {after_where}", 
-                    f"{before_where} WHERE NULL {after_where}"
-                ]
+            # Remove trailing semicolon if present
+            clean_query = sql_query.rstrip(';').strip()
             
-            return tlp_queries
-        except Exception as e:
-            self.logger.error(f"Failed to generate TLP queries: {e}")
-            # Fallback to simple queries
-            return [
-                "SELECT 1 WHERE TRUE",
-                "SELECT 1 WHERE FALSE",
-                "SELECT 1 WHERE NULL"
-            ]
-    
-    def _execute_tlp_queries(self, tlp_queries: List[str]) -> List[Any]:
-        """
-        Execute TLP partitioning queries and return individual results.
-        
-        Returns:
-            List of results from all TLP queries
-        """
-        try:
-            results = []
+            # Partition 1: WHERE TRUE
+            partition1 = f"{clean_query} AND TRUE"
+            partitions.append(partition1)
             
-            for query in tlp_queries:
-                result = self.db_executor.execute_query(query, fetch_results=True)
-                results.append(result)
+            # Partition 2: WHERE FALSE  
+            partition2 = f"{clean_query} AND FALSE"
+            partitions.append(partition2)
             
-            return results
+            # Partition 3: WHERE NULL
+            partition3 = f"{clean_query} AND NULL"
+            partitions.append(partition3)
+            
+            return partitions
             
         except Exception as e:
-            self.logger.error(f"Error executing TLP queries: {e}")
+            self.logger.error(f"Error generating TLP partitions: {e}")
             return []
     
-    def _compare_results(self, original_result: Any, tlp_result: Any) -> bool:
-        """
-        Compare original query result with TLP composed result.
-        
-        Returns:
-            True if results match (no bug), False if mismatch (bug detected)
-        """
+    def _execute_query(self, sql_query: str) -> Optional[Any]:
+        """Execute a query and return the result."""
         try:
-            if not original_result.success or not tlp_result.success:
-                return True  # Can't compare, assume no bug
-            
-            original_data = original_result.data or []
-            tlp_data = tlp_result.data or []
-            
-            # Simple comparison - check if row counts match
-            # In a more sophisticated implementation, we would do deep comparison
-            if len(original_data) != len(tlp_data):
+            result = self.db_executor.execute_query(sql_query)
+            if result and result.get('rows'):
+                # Return the first row's first column for comparison
+                return result['rows'][0][0] if result['rows'] else None
+            return None
+        except Exception as e:
+            self.logger.debug(f"Query execution failed: {e}")
+            return None
+    
+    def _check_tlp_bug(self, original_result: Any, partition_results: list) -> bool:
+        """Check if TLP bug exists."""
+        try:
+            if original_result is None or not partition_results:
                 return False
             
-            # Check if all rows from original are in TLP result
-            for row in original_data:
-                if row not in tlp_data:
-                    return False
+            # Check if partition results are logically consistent
+            # Partition 1 (TRUE) should return same as original
+            # Partition 2 (FALSE) should return empty/0
+            # Partition 3 (NULL) should return empty/0
             
-            return True
+            if len(partition_results) < 3:
+                return False
+            
+            partition1_result = partition_results[0]['result']
+            partition2_result = partition_results[1]['result']
+            partition3_result = partition_results[2]['result']
+            
+            # Check logical consistency
+            # TRUE partition should match original
+            if partition1_result != original_result:
+                return True  # Bug: TRUE partition doesn't match original
+            
+            # FALSE partition should be empty/0
+            if partition2_result is not None and partition2_result != 0:
+                return True  # Bug: FALSE partition returns non-zero
+            
+            # NULL partition should be empty/0  
+            if partition3_result is not None and partition3_result != 0:
+                return True  # Bug: NULL partition returns non-zero
+            
+            return False  # No TLP bug found
             
         except Exception as e:
-            self.logger.error(f"Error comparing results: {e}")
-            return True  # Assume no bug on error
+            self.logger.error(f"Error checking TLP bug: {e}")
+            return False
     
-    def _create_reproduction_query(self, original_query: str, tlp_queries: List[str]) -> str:
-        """Create a reproduction query that demonstrates the TLP bug."""
-        reproduction = f"""
--- TLP Bug Reproduction
--- Original Query:
-{original_query}
-
--- TLP Partitioning Queries:
-"""
-        for i, query in enumerate(tlp_queries, 1):
-            reproduction += f"-- Partition {i}:\n{query}\n\n"
+    def _create_bug_report(self, sql_query: str, original_result: Any, partition_results: list) -> Dict[str, Any]:
+        """Create a TLP bug report."""
+        bug_description = "TLP Oracle detected logic inconsistency in query execution"
         
-        reproduction += """
--- Expected: UNION of partitions should equal original result
--- Bug: Results don't match
-"""
-        return reproduction
-    
-    def _check_tlp_bug(self, original_result: Any, tlp_results: List[Any], tlp_queries: List[str]) -> Tuple[bool, str]:
-        """Check if there's a TLP bug by comparing results."""
-        try:
-            # Validate that we have results from all TLP queries
-            if not tlp_results or len(tlp_results) != 3:
-                return False, "Insufficient TLP results for comparison"
-            
-            # Check if all TLP queries executed successfully
-            for i, result in enumerate(tlp_results):
-                if not hasattr(result, 'success') or not result.success:
-                    self.logger.warning(f"TLP partition {i+1} failed to execute: {tlp_queries[i]}")
-                    return False, f"TLP partition {i+1} failed to execute"
-            
-            # Extract the actual data from results
-            original_data = original_result.data if hasattr(original_result, 'data') else []
-            tlp_true_data = tlp_results[0].data if hasattr(tlp_results[0], 'data') else []
-            tlp_false_data = tlp_results[1].data if hasattr(tlp_results[1], 'data') else []
-            tlp_null_data = tlp_results[2].data if hasattr(tlp_results[2], 'data') else []
-            
-            # For COUNT(*) queries, we need to handle the special case
-            if 'COUNT(*)' in original_result.query.upper() if hasattr(original_result, 'query') else False:
-                # COUNT(*) with LIMIT 1 should return the same count regardless of WHERE TRUE/FALSE/NULL
-                # WHERE TRUE should return the same as original
-                # WHERE FALSE should return 0
-                # WHERE NULL should return 0
-                
-                # Extract numeric values from results
-                try:
-                    original_count = int(original_data[0][0]) if original_data and len(original_data) > 0 else 0
-                    true_count = int(tlp_true_data[0][0]) if tlp_true_data and len(tlp_true_data) > 0 else 0
-                    false_count = int(tlp_false_data[0][0]) if tlp_false_data and len(tlp_false_data) > 0 else 0
-                    null_count = int(tlp_null_data[0][0]) if tlp_null_data and len(tlp_null_data) > 0 else 0
-                    
-                    # Check if the logic is correct
-                    # WHERE TRUE should equal original
-                    # WHERE FALSE should equal 0
-                    # WHERE NULL should equal 0
-                    if true_count == original_count and false_count == 0 and null_count == 0:
-                        return False, "TLP logic is working correctly - no bug detected"
-                    else:
-                        return True, f"TLP Bug: Logic violation detected. Original: {original_count}, TRUE: {true_count}, FALSE: {false_count}, NULL: {null_count}"
-                        
-                except (ValueError, IndexError, TypeError) as e:
-                    self.logger.warning(f"Could not parse COUNT results: {e}")
-                    return False, "Could not parse COUNT results for comparison"
-            
-            # For other query types, do a more general comparison
-            # This is a simplified check - in production you'd want more sophisticated logic
-            return False, "TLP logic appears correct for this query type"
-            
-        except Exception as e:
-            self.logger.error(f"Error in TLP bug check: {e}")
-            return False, f"Error during TLP analysis: {e}"
-    
-    def _create_reproduction_context(self, original_query: str, tlp_queries: List[str]) -> str:
-        """Create a reproduction context for TLP bugs."""
-        try:
-            reproduction = f"""-- TLP Bug Reproduction
--- Original Query:
-{original_query}
--- TLP Partitioning Queries:
--- Partition 1:
-{tlp_queries[0]}
--- Partition 2:
-{tlp_queries[1]}
--- Partition 3:
-{tlp_queries[2]}
--- Expected: UNION of partitions should equal original result
--- Bug: Results don't match"""
-            return reproduction
-        except Exception as e:
-            self.logger.error(f"Error creating reproduction context: {e}")
-            return str(tlp_queries)
+        context = {
+            'original_result': original_result,
+            'partition_results': partition_results,
+            'tlp_check_query': sql_query
+        }
+        
+        return {
+            'bug_type': 'tlp',
+            'description': bug_description,
+            'query': sql_query,
+            'context': context,
+            'oracle_name': 'TLOracle'
+        }

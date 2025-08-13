@@ -3,60 +3,35 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Tuple, Optional, Any
+from typing import Dict, Any, Optional
 
 class BaseOracle(ABC):
-    """
-    Abstract Base Class for a bug-finding oracle.
+    """Base class for all oracles."""
     
-    An oracle is a component that implements a specific technique for finding
-    different types of bugs in the database system. Each oracle focuses on
-    a particular class of bugs and uses specific methodologies to detect them.
-    
-    Examples of oracles include:
-    - TLP Oracle: Detects logic bugs using Ternary Logic Partitioning
-    - QPG Oracle: Detects optimization bugs using Query Plan Guidance
-    - NoREC Oracle: Detects optimization bugs using Non-optimizing Reference Engine Construction
-    """
-    
-    def __init__(self, db_executor):
-        """
-        Initialize the oracle with a database executor.
+    def __init__(self, config: Dict[str, Any]):
+        """Initialize oracle with configuration."""
+        self.config = config
+        self.db_executor = None  # Will be set by the engine
         
-        Args:
-            db_executor: Database executor for running queries
-        """
+    def set_db_executor(self, db_executor):
+        """Set the database executor for this oracle."""
         self.db_executor = db_executor
-        self.logger = logging.getLogger(self.__class__.__name__)
-        self.name = self.__class__.__name__
     
     @abstractmethod
-    def check(self, sql_query: str) -> Tuple[bool, Optional[str], Optional[str]]:
+    def check_for_bugs(self, sql_query: str) -> Optional[Dict[str, Any]]:
         """
-        Check for bugs using the oracle's specific technique.
+        Check for bugs in the given SQL query.
         
         Args:
             sql_query: The SQL query to test
             
         Returns:
-            Tuple of (bug_found, bug_description, reproduction_query)
-            - bug_found: True if a bug was detected, False otherwise
-            - bug_description: Description of the bug if found, None otherwise
-            - reproduction_query: SQL query to reproduce the bug if found, None otherwise
+            Bug report dictionary if bug found, None otherwise
         """
         pass
     
     def can_check(self, sql_query: str) -> bool:
-        """
-        Check if this oracle can process the given query.
-        
-        Args:
-            sql_query: The SQL query to check
-            
-        Returns:
-            True if the oracle can process this query, False otherwise
-        """
-        # Default implementation - can check any query
+        """Check if this oracle can test the given query."""
         return True
     
     def get_oracle_name(self) -> str:
@@ -66,7 +41,7 @@ class BaseOracle(ABC):
         Returns:
             The oracle's name
         """
-        return self.name
+        return self.__class__.__name__
     
     def get_oracle_description(self) -> str:
         """
@@ -75,4 +50,4 @@ class BaseOracle(ABC):
         Returns:
             Description of the oracle's functionality
         """
-        return f"{self.name} - {self.__class__.__doc__ or 'No description available'}"
+        return f"{self.get_oracle_name()} - {self.__class__.__doc__ or 'No description available'}"

@@ -14,12 +14,12 @@ database:
 
 # Fuzzing Configuration
 fuzzing:
-  duration: 300  # 5 minutes default
-  max_sessions: 100
-  queries_per_session: 10
-  mutation_rate: 0.3
-  seed_corpus_size: 100
-  evolved_corpus_size: 50
+  duration: 600
+  max_sessions: 200
+  queries_per_session: 15
+  mutation_rate: 0.7
+  seed_corpus_size: 200
+  evolved_corpus_size: 100
   
   # Fuzzing strategies
   strategies:
@@ -32,44 +32,44 @@ fuzzing:
 # Oracle Configuration - Bug Detection Techniques
 oracles:
   # Core Oracles (Always Enabled)
-  tlp:
+  TLOracle:
     enabled: true
     max_partitions: 3
     enable_advanced_partitioning: true
     
-  qpg:
+  QPGOracle:
     enabled: true
     plan_observation_threshold: 10
     mutation_strategies: ["table_state", "index_state", "data_state"]
     
   # Advanced Oracles (Configurable)
-  pqs:
-    enabled: false  # Enable for Pivoted Query Synthesis
+  PQSOracle:
+    enabled: true  # Enable for Pivoted Query Synthesis
     max_pivot_attempts: 10
     min_pivot_rows: 5
     enable_cross_table_pivoting: true
     
-  norec:
-    enabled: false  # Enable for Non-optimizing Reference Engine Construction
+  NoRECOracle:
+    enabled: true  # Enable for Non-optimizing Reference Engine Construction
     enable_hints: true
     max_rewrite_attempts: 5
     optimization_strategies: ["hint_based", "rewrite_based", "redundant_conditions"]
     
-  cert:
-    enabled: false  # Enable for Cardinality Estimation Restriction Testing
+  CERTOracle:
+    enabled: true  # Enable for Cardinality Estimation Restriction Testing
     enable_explain: true
     max_restriction_attempts: 3
     cardinality_threshold: 0.1
     performance_analysis: true
     
-  dqp:
-    enabled: false  # Enable for Differential Query Plans
+  DQPOracle:
+    enabled: true  # Enable for Differential Query Plans
     enable_plan_control: true
     max_plan_variations: 3
     plan_hints: ["index_hints", "join_hints", "optimization_hints"]
     
-  coddtest:
-    enabled: false  # Enable for Constant Optimization Driven Testing
+  CODDTestOracle:
+    enabled: true  # Enable for Constant Optimization Driven Testing
     enable_constant_folding: true
     enable_constant_propagation: true
     max_substitution_attempts: 5
@@ -79,8 +79,8 @@ oracles:
 generation:
   # Grammar-based generation
   grammar_file: "core/grammar.yaml"
-  max_recursion_depth: 5
-  max_query_length: 1000
+  max_recursion_depth: 8
+  max_query_length: 2000
   
   # Generation strategies
   strategies:
@@ -91,10 +91,10 @@ generation:
     
   # Query complexity control
   complexity:
-    max_joins: 3
-    max_subqueries: 2
-    max_aggregations: 2
-    max_window_functions: 1
+    max_joins: 5
+    max_subqueries: 4
+    max_aggregations: 4
+    max_window_functions: 3
 
 # Mutation Configuration
 mutation:

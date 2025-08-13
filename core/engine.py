@@ -8,7 +8,13 @@ import random
 from typing import List, Dict, Any, Optional
 from .generator import GrammarGenerator
 from .mutator import Mutator
-from oracles import ORACLE_REGISTRY
+from oracles.tlp_oracle import TLOracle
+from oracles.qpg_oracle import QPGOracle
+from oracles.pqs_oracle import PQSOracle
+from oracles.norec_oracle import NoRECOracle
+from oracles.cert_oracle import CERTOracle
+from oracles.dqp_oracle import DQPOracle
+from oracles.coddtest_oracle import CODDTestOracle
 from utils.db_executor import DBExecutor
 from utils.bug_reporter import BugReporter
 
@@ -39,48 +45,42 @@ class FuzzerEngine:
             'oracle_stats': {}
         }
         
-        self.logger.info(f"Registered {len(self.oracles)} active oracles: {[o.name for o in self.oracles]}")
+        self.logger.info(f"Registered {len(self.oracles)} active oracles: {[o.__class__.__name__ for o in self.oracles]}")
     
-    def _initialize_oracles(self) -> List[Any]:
-        """Initialize all available oracles based on configuration."""
-        oracles = []
-        oracle_config = self.config.get('oracles', {})
-        
-        # Always enable core oracles
-        core_oracles = ['TLOracle', 'QPGOracle']
-        
-        # Advanced oracles (configurable)
-        advanced_oracles = [
-            'PQSOracle',      # Pivoted Query Synthesis
-            'NoRECOracle',    # Non-optimizing Reference Engine Construction
-            'CERTOracle',     # Cardinality Estimation Restriction Testing
-            'DQPOracle',      # Differential Query Plans
-            'CODDTestOracle'  # Constant Optimization Driven Testing
-        ]
-        
-        # Initialize core oracles
-        for oracle_name in core_oracles:
-            if oracle_config.get(oracle_name.lower(), {}).get('enabled', True):
-                try:
-                    oracle_class = ORACLE_REGISTRY[oracle_name]
-                    oracle = oracle_class(self.db_executor)
-                    oracles.append(oracle)
-                    self.logger.info(f"Oracle '{oracle_name}' is ENABLED.")
-                except Exception as e:
-                    self.logger.error(f"Failed to initialize oracle '{oracle_name}': {e}")
-        
-        # Initialize advanced oracles
-        for oracle_name in advanced_oracles:
-            if oracle_config.get(oracle_name.lower(), {}).get('enabled', False):
-                try:
-                    oracle_class = ORACLE_REGISTRY[oracle_name]
-                    oracle = oracle_class(self.db_executor)
-                    oracles.append(oracle)
-                    self.logger.info(f"Advanced Oracle '{oracle_name}' is ENABLED.")
-                except Exception as e:
-                    self.logger.error(f"Failed to initialize advanced oracle '{oracle_name}': {e}")
-        
-        return oracles
+    def _initialize_oracles(self):
+        """Initialize all configured oracles."""
+        try:
+            oracle_classes = {
+                'TLOracle': TLOracle,
+                'QPGOracle': QPGOracle,
+                'PQSOracle': PQSOracle,
+                'NoRECOracle': NoRECOracle,
+                'CERTOracle': CERTOracle,
+                'DQPOracle': DQPOracle,
+                'CODDTestOracle': CODDTestOracle
+            }
+            
+            oracles = []
+            for oracle_name in self.config.get('oracles', []):
+                if oracle_name in oracle_classes:
+                    try:
+                        oracle = oracle_classes[oracle_name](self.config)
+                        oracle.set_db_executor(self.db_executor)
+                        oracles.append(oracle)
+                        self.logger.info(f"✅ Oracle initialized: {oracle_name}")
+                    except Exception as e:
+                        self.logger.error(f"❌ Failed to initialize oracle {oracle_name}: {e}")
+                else:
+                    self.logger.warning(f"⚠️ Unknown oracle: {oracle_name}")
+            
+            if not oracles:
+                self.logger.warning("⚠️ No oracles initialized, falling back to basic testing")
+                
+            return oracles
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error initializing oracles: {e}")
+            return []
     
     def run(self, duration: Optional[int] = None) -> None:
         """
@@ -248,13 +248,24 @@ class FuzzerEngine:
     def _execute_ddl_statements(self) -> None:
         """Execute DDL statements and refresh catalog."""
         try:
-            # Generate and execute DDL statements
-            for _ in range(2):
+            # Generate and execute more complex DDL statements
+            for _ in range(random.randint(2, 5)):  # Increased from 2 to 2-5
                 ddl_stmt = self.generator.generate_statement_of_type('ddl_stmt')
                 if ddl_stmt:
                     sql = ddl_stmt.to_sql()
-                    self.db_executor.execute_admin(sql)
-                    self.stats['queries_executed'] += 1
+                    if sql and len(sql.strip()) > 0:
+                        try:
+                            self.db_executor.execute_admin(sql)
+                            self.stats['queries_executed'] += 1
+                            
+                            # Log complex DDL for debugging
+                            if 'JSON' in sql or 'ARRAY' in sql or 'PARTITION' in sql:
+                                self.logger.info(f"Advanced DDL executed: {sql[:150]}...")
+                                
+                        except Exception as e:
+                            self.logger.error(f"Error executing DDL statement: {e}")
+                            self.logger.error(f"SQL: {sql}")
+                            self.stats['query_errors'] += 1
             
             # Refresh catalog after DDL changes
             self.db_executor.catalog.refresh()
@@ -263,20 +274,31 @@ class FuzzerEngine:
             self.logger.error(f"Error executing DDL statements: {e}")
     
     def _execute_dml_statements(self) -> None:
-        """Execute DML statements."""
+        """Execute DML statements and test with oracles."""
         try:
-            # Generate and execute DML statements
-            for _ in range(8):
-                dml_stmt = self.generator.generate_statement_of_type('dml_stmt')
+            # Generate and execute more complex DML statements
+            for _ in range(random.randint(8, 15)):  # Increased from 8 to 8-15
+                dml_stmt = self.generator.generate_statement_of_type('select_stmt')
                 if dml_stmt:
                     sql = dml_stmt.to_sql()
-                    result = self.db_executor.execute_query(sql)
-                    self.stats['queries_executed'] += 1
-                    
-                    # Check for bugs using all oracles
-                    if result:
-                        self._check_query_with_oracles(sql, result)
-            
+                    if sql and len(sql.strip()) > 0:
+                        try:
+                            # Execute the query
+                            result = self.db_executor.execute_query(sql)
+                            self.stats['queries_executed'] += 1
+                            
+                            # Test with oracles for bugs
+                            self._check_query_with_oracles(sql, result)
+                            
+                            # Log complex queries for debugging
+                            if len(sql) > 200:  # Log complex queries
+                                self.logger.info(f"Complex query executed ({len(sql)} chars): {sql[:100]}...")
+                            
+                        except Exception as e:
+                            self.logger.error(f"Error executing DML statement: {e}")
+                            self.logger.error(f"SQL: {sql}")
+                            self.stats['query_errors'] += 1
+                            
         except Exception as e:
             self.logger.error(f"Error executing DML statements: {e}")
     
@@ -298,52 +320,38 @@ class FuzzerEngine:
             self.logger.error(f"Error executing validation SELECT: {e}")
     
     def _check_query_with_oracles(self, query: str, result: Any) -> None:
-        """Check the query with all enabled oracles."""
+        """Check the query with all active oracles for bugs."""
         for oracle in self.oracles:
             try:
-                # Log which oracle is testing which query
-                oracle_name = oracle.get_oracle_name()
-                self.logger.info(f"🔍 Testing query with {oracle_name}: {query[:100]}{'...' if len(query) > 100 else ''}")
+                self.logger.info(f"🔍 Testing query with {oracle.__class__.__name__}: {query[:100]}...")
                 
-                # Check for bugs using the correct method signature
-                bug_found, bug_description, bug_context = oracle.check_for_bugs(query)
+                # Check for bugs using the new oracle interface
+                bug_report = oracle.check_for_bugs(query)
                 
-                if bug_found:
-                    self.logger.warning(f"🚨 BUG DETECTED by {oracle_name}: {bug_description}")
-                    self._report_bug(query, bug_description, bug_context, oracle_name)
-                else:
-                    self.logger.debug(f"✅ {oracle_name}: No bugs detected in query")
+                if bug_report:
+                    self.logger.warning(f"🚨 BUG DETECTED by {oracle.__class__.__name__}: {bug_report['description']}")
+                    self._report_bug(
+                        bug_report['bug_type'],
+                        bug_report['description'],
+                        bug_report['query'],
+                        bug_report['context'],
+                        bug_report['oracle_name']
+                    )
                     
             except Exception as e:
-                self.logger.error(f"Error checking query with {oracle.get_oracle_name()}: {e}")
+                self.logger.error(f"Error checking query with {oracle.__class__.__name__}: {e}")
+                continue
     
-    def _report_bug(self, query: str, bug_description: str, bug_context: Any, oracle_name: str) -> None:
-        """Report a detected bug."""
+    def _report_bug(self, bug_type: str, bug_description: str, query: str, bug_context: Any, oracle_name: str) -> None:
+        """Report a bug to the bug reporter."""
         try:
-            # Update statistics
-            self.stats['bugs_found'] += 1
-            if oracle_name not in self.stats['oracle_stats']:
-                self.stats['oracle_stats'][oracle_name] = 0
-            self.stats['oracle_stats'][oracle_name] += 1
-            
-            # Log the bug
-            self.logger.warning(f"🚨 BUG DETECTED by {oracle_name}: {bug_description}")
-            self.logger.warning(f"Original Query: {query}")
-            
-            # Generate reproduction script
-            reproduction = self._generate_reproduction_script(query, bug_description, bug_context)
-            self.logger.warning(f"Reproduction: {reproduction}")
-            
-            # Report to bug reporter with correct parameters
-            bug_type = self._determine_bug_type(oracle_name, bug_description)
             self.db_executor.bug_reporter.report_bug(
                 bug_type=bug_type,
                 description=bug_description,
                 query=query,
-                error=str(bug_context),
-                reproduction_query=reproduction
+                context=bug_context,
+                oracle_name=oracle_name
             )
-            
         except Exception as e:
             self.logger.error(f"Error reporting bug: {e}")
     
