@@ -24,13 +24,13 @@ class CERTOracle(BaseOracle):
     A violation indicates a potential performance issue.
     """
     
-    def __init__(self, db_executor: DBExecutor, bug_reporter: BugReporter, config: Dict[str, Any]):
-        super().__init__(db_executor, bug_reporter, config)
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
         self.name = "CERTOracle"
         self.logger = logging.getLogger(__name__)
-        self.enable_explain = config.get('cert', {}).get('enable_explain', True)
-        self.max_restriction_attempts = config.get('cert', {}).get('max_restriction_attempts', 3)
-        self.cardinality_threshold = config.get('cert', {}).get('cardinality_threshold', 0.1)
+        self.enable_explain = config.get('enable_explain', True)
+        self.max_restriction_attempts = config.get('max_restriction_attempts', 3)
+        self.cardinality_threshold = config.get('cardinality_threshold', 0.1)
         
     def check_query(self, query: str, query_result: Any) -> Optional[Dict[str, Any]]:
         """
@@ -92,6 +92,79 @@ class CERTOracle(BaseOracle):
             
         return True
     
+    def check_for_bugs(self, query: str, query_result: Any) -> Optional[Dict[str, Any]]:
+        """
+        Check for cardinality estimation restriction testing bugs.
+        
+        Args:
+            query: The SQL query to check
+            query_result: The result of executing the query
+            
+        Returns:
+            Bug report if a bug is detected, None otherwise
+        """
+        try:
+            # Skip simple queries that won't benefit from CERT testing
+            if self._should_skip_cert_testing(query):
+                return None
+            
+            # Check if this is a SELECT query that can benefit from cardinality testing
+            query_lower = query.lower()
+            if not (query_lower.startswith('select') and 'from' in query_lower):
+                return None
+            
+            # Get the base query result
+            base_result = self._get_base_query_result(query)
+            if base_result is None:
+                return None
+            
+            # Create a version with cardinality restrictions
+            restricted_query = self._create_restricted_query(query)
+            if not restricted_query:
+                return None
+            
+            # Execute the restricted query
+            restricted_result = self.db_executor.execute_query(restricted_query)
+            if restricted_result is None:
+                return None
+            
+            # Compare results
+            if self._results_differ_significantly(base_result, restricted_result):
+                return {
+                    'query': query,
+                    'bug_type': 'cardinality_estimation_inconsistency',
+                    'description': 'Query result differs with cardinality restrictions',
+                    'severity': 'MEDIUM',
+                    'expected_result': 'Consistent results between original and cardinality-restricted queries',
+                    'actual_result': f'Different results: original={base_result}, restricted={restricted_result}',
+                    'context': {
+                        'original_query': query,
+                        'restricted_query': restricted_query,
+                        'original_result': base_result,
+                        'restricted_result': restricted_result
+                    }
+                }
+            
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Error in check_for_bugs: {e}")
+            return None
+    
+    def _should_skip_cert_testing(self, query: str) -> bool:
+        """Skip queries that won't benefit from CERT testing."""
+        query_lower = query.lower()
+        
+        # Skip simple queries
+        if query_lower.count('select') == 1 and 'from' in query_lower and 'where' not in query_lower:
+            return True
+        
+        # Skip system table queries
+        if 'information_schema' in query_lower or 'pg_catalog' in query_lower:
+            return True
+        
+        return False
+    
     def _has_complex_features(self, query: str) -> bool:
         """Check if query has complex features that make CERT less effective."""
         complex_patterns = [
@@ -140,9 +213,20 @@ class CERTOracle(BaseOracle):
             # The first row should contain the JSON plan
             plan_json = explain_result.rows[0][0]
             
-            # Parse JSON to find estimated rows
-            import json
-            plan = json.loads(plan_json)
+            # Handle different result formats
+            if isinstance(plan_json, str):
+                # Parse JSON string
+                import json
+                plan = json.loads(plan_json)
+            elif isinstance(plan_json, list):
+                # Already a parsed list, use directly
+                plan = plan_json
+            elif isinstance(plan_json, dict):
+                # Already a parsed dict, use directly
+                plan = plan_json
+            else:
+                self.logger.warning(f"Unexpected plan format: {type(plan_json)}")
+                return None
             
             # Navigate through the plan to find estimated rows
             estimated_rows = self._find_estimated_rows_in_plan(plan)
@@ -309,3 +393,50 @@ class CERTOracle(BaseOracle):
 -- Expected: Restrictive query should have estimated rows <= original query
 -- Bug: Restrictive query has higher estimated rows ({restrictive_estimate} > {original_estimate})
 -- This indicates a cardinality estimation bug that can lead to poor query performance""" 
+
+    def _get_base_query_result(self, query: str) -> Optional[Any]:
+        """Get the base query result."""
+        try:
+            result = self.db_executor.execute_query(query)
+            return result
+        except Exception as e:
+            self.logger.debug(f"Error getting base query result: {e}")
+            return None
+    
+    def _create_restricted_query(self, query: str) -> Optional[str]:
+        """Create a version with cardinality restrictions."""
+        try:
+            # Add a LIMIT clause that should not change the result if cardinality estimation is correct
+            if 'limit' in query.lower():
+                return query  # Already has LIMIT
+            else:
+                return f"{query} LIMIT 1000"
+        except Exception as e:
+            self.logger.debug(f"Error creating restricted query: {e}")
+            return None
+    
+    def _results_differ_significantly(self, result1: Any, result2: Any) -> bool:
+        """Check if two results differ significantly."""
+        try:
+            # Extract row counts
+            count1 = self._extract_row_count(result1)
+            count2 = self._extract_row_count(result2)
+            
+            # Consider it a bug if counts differ by more than 1 (allowing for edge cases)
+            return abs(count1 - count2) > 1
+            
+        except Exception as e:
+            self.logger.debug(f"Error comparing results: {e}")
+            return False
+    
+    def _extract_row_count(self, result: Any) -> int:
+        """Extract row count from result."""
+        try:
+            if hasattr(result, 'rows') and result.rows is not None:
+                return len(result.rows)
+            elif hasattr(result, 'data') and result.data is not None:
+                return len(result.data)
+            else:
+                return 0
+        except Exception:
+            return 0 

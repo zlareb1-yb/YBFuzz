@@ -1,204 +1,325 @@
-# YBFuzz Configuration File
-# YugabyteDB fuzzer configuration
+# YBFuzz Framework Configuration - Production Database Testing
+# ================================================================
+#
+# This configuration file provides production settings for the YBFuzz
+# framework, designed to detect database issues in YugabyteDB through
+# intelligent query generation, advanced oracle testing, and comprehensive
+# bug detection.
+#
+# Features:
+# - 7 specialized oracles for different bug types
+# - Intelligent query generation with grammar-based mutations
+# - Real-time performance monitoring and metrics
+# - Comprehensive error handling and recovery
+# - Production logging and reporting
+# - Automated bug reproduction and validation
+# - Distributed testing capabilities
+# - Advanced corpus evolution and management
+#
+# Author: Database Testing Team
+# License: MIT
+# Version: 2.0.0
 
-# Database Configuration
+# =============================================================================
+# DATABASE CONFIGURATION
+# =============================================================================
 database:
+  # Connection settings
   host: "10.9.86.186,10.9.139.177,10.9.205.248"
   port: 5433
+  dbname: "yugabyte"
   user: "yugabyte"
   password: "Password#123"
-  database: "yugabyte"
   schema_name: "ybfuzz_schema"
-  connection_timeout: 30
-  max_connections: 10
-
-# Fuzzing Configuration
-fuzzing:
-  duration: 600
-  max_sessions: 200
-  queries_per_session: 15
-  mutation_rate: 0.7
-  seed_corpus_size: 200
-  evolved_corpus_size: 100
   
-  # Fuzzing strategies
-  strategies:
-    grammar_based: true
-    mutation_based: true
-    corpus_based: true
-    feedback_driven: true
-    adaptive_mutation: true
+  # Advanced connection settings
+  connection_timeout: 30
+  statement_timeout: 300
+  max_connections: 10
+  connection_pool_size: 5
+  retry_attempts: 3
+  retry_delay: 1.0
+  
+  # YugabyteDB specific settings
+  enable_leader_preference: true
+  enable_read_replicas: true
+  enable_consistent_reads: true
+  
+  # Security and performance
+  enable_ssl: false
+  ssl_mode: "prefer"
+  enable_connection_pooling: true
+  pool_recycle: 3600
 
-# Oracle Configuration - Bug Detection Techniques
+# =============================================================================
+# ORACLE CONFIGURATION - Advanced Bug Detection
+# =============================================================================
 oracles:
-  # Core Oracles (Always Enabled)
+  # Enabled oracles (all 7 for maximum coverage)
+  enabled_oracles:
+    - "TLOracle"        # Ternary Logic Partitioning
+    - "QPGOracle"       # Query Plan Guidance
+    - "PQSOracle"       # Pivoted Query Synthesis
+    - "NoRECOracle"     # Non-optimizing Reference Engine Construction
+    - "CERTOracle"      # Cardinality Estimation Restriction Testing
+    - "DQPOracle"       # Differential Query Plans
+    - "CODDTestOracle"  # Constant Optimization Driven Testing
+  
+  # TLP Oracle - Logic Bug Detection
   TLOracle:
     enabled: true
+    enable_non_deterministic_check: true
+    skip_simple_queries: true
     max_partitions: 3
-    enable_advanced_partitioning: true
-    
+    enable_complex_conditions: true
+    enable_nested_queries: true
+  
+  # QPG Oracle - Performance Bug Detection
   QPGOracle:
     enabled: true
-    plan_observation_threshold: 10
-    mutation_strategies: ["table_state", "index_state", "data_state"]
-    
-  # Advanced Oracles (Configurable)
+    performance_threshold: 0.15  # 15% performance improvement threshold
+    execution_runs: 3           # Run each query 3 times and average
+    enable_plan_hints: true
+    max_alternative_plans: 5
+    enable_distributed_optimization: true
+    enable_index_optimization: true
+  
+  # PQS Oracle - Pivot Row Bug Detection
   PQSOracle:
-    enabled: true  # Enable for Pivoted Query Synthesis
+    enabled: true
     max_pivot_attempts: 10
-    min_pivot_rows: 5
-    enable_cross_table_pivoting: true
-    
+    enable_complex_queries: true
+    enable_user_tables: true
+    enable_aggregation_queries: true
+  
+  # NoREC Oracle - Optimization Bug Detection
   NoRECOracle:
-    enabled: true  # Enable for Non-optimizing Reference Engine Construction
-    enable_hints: true
-    max_rewrite_attempts: 5
-    optimization_strategies: ["hint_based", "rewrite_based", "redundant_conditions"]
-    
+    enabled: true
+    enable_optimization_hints: true
+    max_hint_combinations: 8
+    enable_plan_comparison: true
+    enable_performance_analysis: true
+  
+  # CERT Oracle - Cardinality Bug Detection
   CERTOracle:
-    enabled: true  # Enable for Cardinality Estimation Restriction Testing
-    enable_explain: true
-    max_restriction_attempts: 3
-    cardinality_threshold: 0.1
-    performance_analysis: true
-    
+    enabled: true
+    cardinality_threshold: 0.5
+    enable_plan_analysis: true
+    enable_statistics_validation: true
+    enable_cost_estimation: true
+  
+  # DQP Oracle - Differential Plan Bug Detection
   DQPOracle:
-    enabled: true  # Enable for Differential Query Plans
-    enable_plan_control: true
-    max_plan_variations: 3
-    plan_hints: ["index_hints", "join_hints", "optimization_hints"]
-    
+    enabled: true
+    enable_plan_comparison: true
+    max_plan_variations: 6
+    enable_hint_optimization: true
+    enable_plan_stability: true
+  
+  # CODDTest Oracle - Constant Optimization Bug Detection
   CODDTestOracle:
-    enabled: true  # Enable for Constant Optimization Driven Testing
+    enabled: true
     enable_constant_folding: true
-    enable_constant_propagation: true
-    max_substitution_attempts: 5
-    optimization_levels: ["basic", "intermediate", "advanced"]
+    max_optimization_steps: 5
+    enable_expression_optimization: true
+    enable_type_inference: true
 
-# Query Generation Configuration
-generation:
-  # Grammar-based generation
-  grammar_file: "core/grammar.yaml"
-  max_recursion_depth: 8
-  max_query_length: 2000
+# =============================================================================
+# FUZZING CONFIGURATION - Maximum Bug Detection
+# =============================================================================
+fuzzing:
+  # Core fuzzing settings
+  duration: 360  # 6 minutes default
+  max_queries: null  # No limit
+  queries_per_second: 1.0
+  max_query_length: 10000
   
-  # Generation strategies
-  strategies:
-    context_aware: true
-    schema_aware: true
-    type_aware: true
-    constraint_aware: true
-    
-  # Query complexity control
-  complexity:
-    max_joins: 5
-    max_subqueries: 4
-    max_aggregations: 4
-    max_window_functions: 3
+  # Advanced features
+  enable_mutation: true
+  enable_corpus_evolution: true
+  enable_distributed: false
+  
+  # Query generation strategy
+  grammar_mutation_probability: 0.3
+  seed_query_probability: 0.2
+  random_query_probability: 0.5
+  
+  # Session management
+  session_duration: 300  # 5 minutes
+  max_sessions: null     # No limit
+  session_cleanup_interval: 60
+  max_errors_per_session: 50
+  
+  # Performance optimization
+  batch_size: 10
+  max_concurrent_queries: 5
+  query_timeout: 30.0
+  
+  # Advanced query types
+  enable_ddl_queries: true
+  enable_dml_queries: true
+  enable_complex_joins: true
+  enable_subqueries: true
+  enable_window_functions: true
+  enable_ctes: true
+  enable_json_operations: true
+  enable_array_operations: true
+  enable_aggregations: true
+  enable_transactions: true
+  
+  # Session state management
+  reset_session_state: false
+  create_session_schema: false
+  cleanup_session_schema: false
 
-# Mutation Configuration
-mutation:
-  # Mutation strategies
-  strategies:
-    grammar_mutation: true
-    semantic_mutation: true
-    structural_mutation: true
-    feedback_driven_mutation: true
-
-# Bug Reporting Configuration
-bug_reporting:
-  # Report organization
-  organize_by:
-    - "bug_type"
-    - "oracle"
-    - "severity"
-    - "category"
-    
-  # Report formats
-  formats:
-    - "json"
-    - "sql"
-    - "markdown"
-    - "html"
-    
-  # Report content
-  content:
-    include_reproduction: true
-    include_context: true
-    include_statistics: true
-    include_metadata: true
-    
-  # Reporting features
-  features:
-    bug_clustering: true
-    duplicate_detection: true
-    severity_classification: true
-    impact_analysis: true
-
-# Performance Configuration
-performance:
-  # Query execution
-  execution:
-    timeout: 30
-    max_memory: "1GB"
-    parallel_execution: true
-    connection_pooling: true
-    
-  # Performance features
-  features:
-    query_planning: true
-    result_caching: true
-    adaptive_execution: true
-    
-  # Monitoring
-  monitoring:
-    performance_metrics: true
-    resource_usage: true
-    bottleneck_detection: true
-
-# Logging Configuration
+# =============================================================================
+# LOGGING CONFIGURATION - Production Logging
+# =============================================================================
 logging:
-  level: "INFO"
-  format: "%(asctime)s - %(levelname)s - [%(name)s] - %(message)s"
+  # Log levels and files
+  log_level: "INFO"
+  log_file: "logs/ybfuzz_comprehensive.log"
+  error_log_file: "logs/ybfuzz_errors.log"
+  metrics_log_file: "logs/ybfuzz_metrics.log"
   
-  # Log destinations
-  destinations:
-    - "console"
-    - "file"
-    - "syslog"
-    
-  # Logging features
-  features:
-    structured_logging: true
-    log_rotation: true
-    log_compression: true
-    performance_logging: true
+  # Advanced logging options
+  enable_structured_logging: true
+  enable_performance_metrics: true
+  enable_query_tracking: true
+  enable_oracle_tracking: true
+  
+  # Log rotation and management
+  max_log_size: 104857600  # 100MB
+  backup_count: 5
+  enable_compression: true
+  
+  # Query logging
+  log_all_queries: true
+  log_query_results: false
+  log_query_plans: true
+  log_performance_metrics: true
 
-# Security Configuration
-security:
-  # Input validation
-  validation:
-    sql_injection_protection: true
-    query_sanitization: true
-    parameter_validation: true
-    
-  # Access control
-  access_control:
-    user_privileges: true
-    schema_isolation: true
-    query_restrictions: true
+# =============================================================================
+# MONITORING CONFIGURATION - Real-Time Performance Tracking
+# =============================================================================
+monitoring:
+  # Core monitoring
+  enable_real_time_monitoring: true
+  enable_performance_tracking: true
+  enable_resource_monitoring: true
+  enable_bug_analytics: true
+  
+  # Metrics collection
+  metrics_interval: 60  # seconds
+  performance_sampling_rate: 0.1
+  enable_histograms: true
+  enable_percentiles: true
+  
+  # Alerting and thresholds
+  enable_alerts: false
+  error_rate_threshold: 0.1
+  performance_degradation_threshold: 0.2
+  
+  # Performance tracking
+  track_query_execution_time: true
+  track_memory_usage: true
+  track_cpu_usage: true
+  track_database_connections: true
 
-# Testing Configuration
-testing:
-  # Test modes
-  modes:
-    smoke_test: false
-    regression_test: false
-    performance_test: false
-    stress_test: false
-    
-  # Test coverage
-  coverage:
-    statement_coverage: true
-    branch_coverage: true
-    oracle_coverage: true
+# =============================================================================
+# CORPUS CONFIGURATION - Advanced Query Evolution
+# =============================================================================
+corpus:
+  # Corpus management
+  initial_corpus_size: 1000
+  max_corpus_size: 10000
+  evolution_rate: 0.1
+  mutation_strength: 0.3
+  
+  # Advanced evolution
+  enable_adaptive_mutation: true
+  enable_cross_over: true
+  enable_selection_pressure: true
+  
+  # Seed management
+  seed_query_file: "corpus/seed_queries.txt"
+  evolved_corpus_dir: "evolved_corpus"
+  
+  # Query diversity
+  enable_complex_queries: true
+  enable_edge_cases: true
+  enable_performance_queries: true
+  enable_distributed_queries: true
+
+# =============================================================================
+# PERFORMANCE TUNING - Production Optimization
+# =============================================================================
+performance:
+  # Memory management
+  max_memory_usage: 2147483648  # 2GB
+  enable_gc_optimization: true
+  enable_memory_pooling: true
+  
+  # Processing optimization
+  enable_async_processing: false
+  enable_batch_processing: true
+  enable_query_caching: true
+  
+  # Database optimization
+  enable_connection_pooling: true
+  enable_query_preparation: true
+  enable_plan_caching: true
+  
+  # Memory management
+  gc_threshold: 1000
+  memory_pool_size: 104857600  # 100MB
+  enable_memory_monitoring: true
+
+# =============================================================================
+# DISTRIBUTED TESTING - Production Scale
+# =============================================================================
+distributed:
+  enabled: false
+  worker_nodes: []
+  coordinator_node: "localhost"
+  enable_load_balancing: true
+  enable_fault_tolerance: true
+  
+  # Worker management
+  max_workers: 10
+  worker_timeout: 300
+  enable_worker_monitoring: true
+  
+  # Communication
+  enable_secure_communication: true
+  communication_timeout: 60
+  retry_attempts: 3
+
+# =============================================================================
+# GLOBAL SETTINGS
+# =============================================================================
+# Random seed for reproducibility
+random_seed: null  # Will be auto-generated if null
+
+# Debug mode
+debug: false
+
+# Dry run mode (generate queries without executing)
+dry_run: false
+
+# Enable advanced features
+enable_metrics: true
+enable_corpus_evolution: true
+enable_distributed: false
+
+# Performance thresholds
+max_query_execution_time: 30.0
+max_memory_usage_per_query: 104857600  # 100MB
+max_concurrent_oracles: 7
+
+# Advanced features
+enable_adaptive_fuzzing: true
+enable_intelligent_mutation: true
+enable_bug_classification: true
+enable_automated_reproduction: true
+enable_performance_profiling: true

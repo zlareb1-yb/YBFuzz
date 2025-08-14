@@ -3,8 +3,7 @@ Oracle implementations for detecting database bugs.
 """
 
 from .base_oracle import BaseOracle
-from .base_oracle import BaseOracle
-from .tlp_oracle import TLOracle
+from .tlp_oracle import TLPOracle
 from .qpg_oracle import QPGOracle
 from .pqs_oracle import PQSOracle
 from .norec_oracle import NoRECOracle
@@ -14,7 +13,7 @@ from .coddtest_oracle import CODDTestOracle
 
 __all__ = [
     'BaseOracle',
-    'TLOracle',
+    'TLPOracle',
     'QPGOracle', 
     'PQSOracle',
     'NoRECOracle',
@@ -23,9 +22,9 @@ __all__ = [
     'CODDTestOracle'
 ]
 
-# Oracle registry for easy instantiation
+# Oracle registry for easy access
 ORACLE_REGISTRY = {
-    'TLOracle': TLOracle,
+    'TLPOracle': TLPOracle,
     'QPGOracle': QPGOracle,
     'PQSOracle': PQSOracle,
     'NoRECOracle': NoRECOracle,

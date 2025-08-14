@@ -1,0 +1,32 @@
+# YBFuzz Framework - Core Dependencies
+# ====================================
+# Essential packages needed to run the database fuzzer
+
+# Core database driver
+psycopg2-binary>=2.9.5
+
+# Configuration parsing
+PyYAML>=6.0
+
+# Performance monitoring
+psutil>=5.9.0
+
+# Logging and utilities
+colorama>=0.4.6
+
+# Optional: Additional logging (install if needed)
+# structlog>=23.1.0
+
+# Optional: Environment variables (install if needed)
+# python-dotenv>=1.0.0
+
+# Optional: JSON schema validation (install if needed)
+# jsonschema>=4.17.0
+
+# Optional: Testing framework (install if needed)
+# pytest>=7.4.0
+
+# Optional: Code quality tools (install if needed)
+# black>=23.7.0
+# flake8>=6.0.0
+# mypy>=1.5.0 

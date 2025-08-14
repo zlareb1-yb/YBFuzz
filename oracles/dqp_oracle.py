@@ -21,13 +21,13 @@ class DQPOracle(BaseOracle):
     produce a consistent result. DQP supports MySQL, MariaDB, and TiDB.
     """
     
-    def __init__(self, db_executor: DBExecutor, bug_reporter: BugReporter, config: Dict[str, Any]):
-        super().__init__(db_executor, bug_reporter, config)
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
         self.name = "DQPOracle"
         self.logger = logging.getLogger(__name__)
-        self.enable_plan_control = config.get('dqp', {}).get('enable_plan_control', True)
-        self.max_plan_variations = config.get('dqp', {}).get('max_plan_variations', 3)
-        self.plan_hints = config.get('dqp', {}).get('plan_hints', [])
+        self.enable_plan_control = config.get('enable_plan_control', True)
+        self.max_plan_variations = config.get('max_plan_variations', 3)
+        self.plan_hints = config.get('plan_hints', [])
         
     def check_query(self, query: str, query_result: Any) -> Optional[Dict[str, Any]]:
         """
@@ -88,6 +88,79 @@ class DQPOracle(BaseOracle):
             return False
             
         return True
+    
+    def check_for_bugs(self, query: str, query_result: Any) -> Optional[Dict[str, Any]]:
+        """
+        Check for differential query plan bugs.
+        
+        Args:
+            query: The SQL query to check
+            query_result: The result of executing the query
+            
+        Returns:
+            Bug report if a bug is detected, None otherwise
+        """
+        try:
+            # Skip simple queries that won't benefit from DQP testing
+            if self._should_skip_dqp_testing(query):
+                return None
+            
+            # Check if this is a SELECT query that can have different execution plans
+            query_lower = query.lower()
+            if not (query_lower.startswith('select') and 'from' in query_lower):
+                return None
+            
+            # Get the base query result
+            base_result = self._get_base_query_result(query)
+            if base_result is None:
+                return None
+            
+            # Create a modified version that might use a different plan
+            modified_query = self._create_modified_query(query)
+            if not modified_query:
+                return None
+            
+            # Execute the modified query
+            modified_result = self.db_executor.execute_query(modified_query)
+            if modified_result is None:
+                return None
+            
+            # Compare results
+            if self._results_differ_significantly(base_result, modified_result):
+                return {
+                    'query': query,
+                    'bug_type': 'differential_query_plan_inconsistency',
+                    'description': 'Query result differs with modified execution plan',
+                    'severity': 'MEDIUM',
+                    'expected_result': 'Consistent results between different execution plans',
+                    'actual_result': f'Different results: original={base_result}, modified={modified_result}',
+                    'context': {
+                        'original_query': query,
+                        'modified_query': modified_query,
+                        'original_result': base_result,
+                        'modified_result': modified_result
+                    }
+                }
+            
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Error in check_for_bugs: {e}")
+            return None
+    
+    def _should_skip_dqp_testing(self, query: str) -> bool:
+        """Skip queries that won't benefit from DQP testing."""
+        query_lower = query.lower()
+        
+        # Skip simple queries
+        if query_lower.count('select') == 1 and 'from' in query_lower and 'where' not in query_lower:
+            return True
+        
+        # Skip system table queries
+        if 'information_schema' in query_lower or 'pg_catalog' in query_lower:
+            return True
+        
+        return False
     
     def _has_plan_variation_potential(self, query: str) -> bool:
         """Check if query has potential for different execution plans."""
@@ -423,3 +496,57 @@ class DQPOracle(BaseOracle):
 -- This indicates a logic bug in the query execution engine"""
         
         return repro 
+
+    def _get_base_query_result(self, query: str) -> Optional[Any]:
+        """Get the base query result."""
+        try:
+            result = self.db_executor.execute_query(query)
+            return result
+        except Exception as e:
+            self.logger.debug(f"Error getting base query result: {e}")
+            return None
+    
+    def _create_modified_query(self, query: str) -> Optional[str]:
+        """Create a modified version of the query."""
+        try:
+            # Check if query has LIMIT/ORDER BY/etc clauses that would prevent AND conditions
+            query_upper = query.upper()
+            has_limiting_clauses = any(clause in query_upper for clause in ['LIMIT', 'ORDER BY', 'GROUP BY', 'HAVING'])
+            
+            if 'where' in query.lower() and not has_limiting_clauses:
+                return f"{query} AND 1=1"
+            elif 'where' in query.lower() and has_limiting_clauses:
+                # For queries with LIMIT/etc, we can't easily add AND conditions
+                # So we'll skip this partition to avoid syntax errors
+                return None
+            else:
+                return f"{query} WHERE 1=1"
+        except Exception as e:
+            self.logger.debug(f"Error creating modified query: {e}")
+            return None
+    
+    def _results_differ_significantly(self, result1: Any, result2: Any) -> bool:
+        """Check if two results differ significantly."""
+        try:
+            # Extract row counts
+            count1 = self._extract_row_count(result1)
+            count2 = self._extract_row_count(result2)
+            
+            # Consider it a bug if counts differ by more than 1 (allowing for edge cases)
+            return abs(count1 - count2) > 1
+            
+        except Exception as e:
+            self.logger.debug(f"Error comparing results: {e}")
+            return False
+    
+    def _extract_row_count(self, result: Any) -> int:
+        """Extract row count from result."""
+        try:
+            if hasattr(result, 'rows') and result.rows is not None:
+                return len(result.rows)
+            elif hasattr(result, 'data') and result.data is not None:
+                return len(result.data)
+            else:
+                return 0
+        except Exception:
+            return 0 

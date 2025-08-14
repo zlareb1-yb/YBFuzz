@@ -24,13 +24,13 @@ class CODDTestOracle(BaseOracle):
     corresponding to constant folding and constant propagation.
     """
     
-    def __init__(self, db_executor: DBExecutor, bug_reporter: BugReporter, config: Dict[str, Any]):
-        super().__init__(db_executor, bug_reporter, config)
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
         self.name = "CODDTestOracle"
         self.logger = logging.getLogger(__name__)
-        self.enable_constant_folding = config.get('coddtest', {}).get('enable_constant_folding', True)
-        self.enable_constant_propagation = config.get('coddtest', {}).get('enable_constant_propagation', True)
-        self.max_substitution_attempts = config.get('coddtest', {}).get('max_substitution_attempts', 5)
+        self.enable_constant_folding = config.get('enable_constant_folding', True)
+        self.enable_constant_propagation = config.get('enable_constant_propagation', True)
+        self.max_substitution_attempts = config.get('max_substitution_attempts', 5)
         
     def check_query(self, query: str, query_result: Any) -> Optional[Dict[str, Any]]:
         """
@@ -93,6 +93,79 @@ class CODDTestOracle(BaseOracle):
             return False
             
         return True
+    
+    def check_for_bugs(self, query: str, query_result: Any) -> Optional[Dict[str, Any]]:
+        """
+        Check for constant optimization driven testing bugs.
+        
+        Args:
+            query: The SQL query to check
+            query_result: The result of executing the query
+            
+        Returns:
+            Bug report if a bug is detected, None otherwise
+        """
+        try:
+            # Skip simple queries that won't benefit from CODDTest testing
+            if self._should_skip_coddtest_testing(query):
+                return None
+            
+            # Check if this is a SELECT query that can benefit from constant optimization testing
+            query_lower = query.lower()
+            if not (query_lower.startswith('select') and 'from' in query_lower):
+                return None
+            
+            # Get the base query result
+            base_result = self._get_base_query_result(query)
+            if base_result is None:
+                return None
+            
+            # Create a version with constant optimizations
+            optimized_query = self._create_optimized_query(query)
+            if not optimized_query:
+                return None
+            
+            # Execute the optimized query
+            optimized_result = self.db_executor.execute_query(optimized_query)
+            if optimized_result is None:
+                return None
+            
+            # Compare results
+            if self._results_differ_significantly(base_result, optimized_result):
+                return {
+                    'query': query,
+                    'bug_type': 'constant_optimization_inconsistency',
+                    'description': 'Query result differs with constant optimizations',
+                    'severity': 'MEDIUM',
+                    'expected_result': 'Consistent results between original and constant-optimized queries',
+                    'actual_result': f'Different results: original={base_result}, optimized={optimized_result}',
+                    'context': {
+                        'original_query': query,
+                        'optimized_query': optimized_query,
+                        'original_result': base_result,
+                        'optimized_result': optimized_result
+                    }
+                }
+            
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Error in check_for_bugs: {e}")
+            return None
+    
+    def _should_skip_coddtest_testing(self, query: str) -> bool:
+        """Skip queries that won't benefit from CODDTest testing."""
+        query_lower = query.lower()
+        
+        # Skip simple queries
+        if query_lower.count('select') == 1 and 'from' in query_lower and 'where' not in query_lower:
+            return True
+        
+        # Skip system table queries
+        if 'information_schema' in query_lower or 'pg_catalog' in query_lower:
+            return True
+        
+        return False
     
     def _has_optimization_potential(self, query: str) -> bool:
         """Check if query has potential for constant optimization."""
@@ -448,3 +521,50 @@ class CODDTestOracle(BaseOracle):
 -- Expected: Both queries should return identical results
 -- Bug: Results differ between original and optimized versions
 -- This indicates a logic bug in the constant optimization engine""" 
+
+    def _get_base_query_result(self, query: str) -> Optional[Any]:
+        """Get the base query result."""
+        try:
+            result = self.db_executor.execute_query(query)
+            return result
+        except Exception as e:
+            self.logger.debug(f"Error getting base query result: {e}")
+            return None
+    
+    def _create_optimized_query(self, query: str) -> Optional[str]:
+        """Create a version with constant optimizations."""
+        try:
+            # Add a constant condition that should not change the result
+            if 'where' in query.lower():
+                return f"{query} AND 1=1"
+            else:
+                return f"{query} WHERE 1=1"
+        except Exception as e:
+            self.logger.debug(f"Error creating optimized query: {e}")
+            return None
+    
+    def _results_differ_significantly(self, result1: Any, result2: Any) -> bool:
+        """Check if two results differ significantly."""
+        try:
+            # Extract row counts
+            count1 = self._extract_row_count(result1)
+            count2 = self._extract_row_count(result2)
+            
+            # Consider it a bug if counts differ by more than 1 (allowing for edge cases)
+            return abs(count1 - count2) > 1
+            
+        except Exception as e:
+            self.logger.debug(f"Error comparing results: {e}")
+            return False
+    
+    def _extract_row_count(self, result: Any) -> int:
+        """Extract row count from result."""
+        try:
+            if hasattr(result, 'rows') and result.rows is not None:
+                return len(result.rows)
+            elif hasattr(result, 'data') and result.data is not None:
+                return len(result.data)
+            else:
+                return 0
+        except Exception:
+            return 0 

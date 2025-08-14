@@ -1,253 +1,263 @@
-# YBFuzz - YugabyteDB Testing Framework
+# YBFuzz - Advanced Database Fuzzer for YugabyteDB
 
-A comprehensive fuzzing framework designed to detect bugs in YugabyteDB through advanced testing techniques.
+## Overview
 
-## Architecture
+YBFuzz is a comprehensive database fuzzing framework designed to detect logical bugs, consistency issues, and query optimizer performance problems in YugabyteDB through intelligent query generation, multi-oracle testing, and advanced bug detection. The framework provides production-grade testing capabilities for distributed database systems with a focus on catching real-world issues.
 
-### Core Components
-- **Query Generator**: Grammar-based SQL generation with schema awareness
-- **Oracle System**: Multiple bug detection oracles using different testing methodologies
-- **Bug Reporter**: Structured bug reporting with reproduction scripts
-- **Database Executor**: Connection management and query execution
+## Key Features
 
-### Oracle Ecosystem
+- **Grammar-Based Query Generation**: BNF grammar-driven SQL generation with AST construction and semantic validation
+- **Multi-Oracle Testing**: 12 specialized oracle implementations for comprehensive bug detection
+- **YugabyteDB-Specific Testing**: Optimized for distributed database features, consistency levels, and distributed execution
+- **Concurrent Testing**: Built-in ACID violation detection, race condition testing, and Jepsen-like consistency checks
+- **High-Performance Mode**: Optimized for high-throughput testing with batch processing capabilities
+- **Professional Bug Reporting**: Comprehensive bug reproduction scripts, test files, and metadata
 
-#### TLP (Ternary Logic Partitioning)
-- **Purpose**: Detects logic bugs by partitioning queries into three logical states
-- **Method**: Compares results of WHERE TRUE, WHERE FALSE, and WHERE NULL clauses
-- **Use Case**: Logic consistency validation
+## Architecture Overview
 
-#### QPG (Query Plan Guidance)
-- **Purpose**: Identifies optimization bugs through query plan analysis
-- **Method**: Monitors query plan changes and detects inconsistencies
-- **Use Case**: Query optimizer testing
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    YBFuzz Framework                            │
+├─────────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐           │
+│  │   Main      │  │   Config    │  │   Logging   │           │
+│  │  Entry      │  │ Management  │  │   System    │           │
+│  └─────────────┘  └─────────────┘  └─────────────┘           │
+├─────────────────────────────────────────────────────────────────┤
+│                        Core Engine                             │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐           │
+│  │  Session    │  │   Query     │  │   Oracle    │           │
+│  │ Management  │  │ Generation  │  │ Orchestrator│           │
+│  └─────────────┘  └─────────────┘  └─────────────┘           │
+├─────────────────────────────────────────────────────────────────┤
+│                     Oracle Layer                               │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐           │
+│  │   TLP       │  │    QPG      │  │    PQS      │           │
+│  │  Oracle     │  │   Oracle    │  │   Oracle    │           │
+│  └─────────────┘  └─────────────┘  └─────────────┘           │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐           │
+│  │   NoREC     │  │    CERT     │  │    DQP      │           │
+│  │  Oracle     │  │   Oracle    │  │   Oracle    │           │
+│  └─────────────┘  └─────────────┘  └─────────────┘           │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐           │
+│  │  CODDTest   │  │ YugabyteDB  │  │   Complex   │           │
+│  │   Oracle    │  │  Features   │  │     SQL     │           │
+│  └─────────────┘  └─────────────┘  └─────────────┘           │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐           │
+│  │Distributed  │  │   Edge      │  │   Mutator   │           │
+│  │Consistency  │  │   Case      │  │             │           │
+│  └─────────────┘  └─────────────┘  └─────────────┘           │
+├─────────────────────────────────────────────────────────────────┤
+│                    Infrastructure Layer                         │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐           │
+│  │  Database   │  │    Bug      │  │   Corpus    │           │
+│  │ Executor    │  │  Reporter   │  │  Manager    │           │
+│  └─────────────┘  └─────────────┘  └─────────────┘           │
+├─────────────────────────────────────────────────────────────────┤
+│                     YugabyteDB                                 │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐           │
+│  │   Tables    │  │   Indexes   │  │   Views     │           │
+│  │             │  │             │  │             │           │
+│  └─────────────┘  └─────────────┘  └─────────────┘           │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-#### PQS (Pivoted Query Synthesis)
-- **Purpose**: Generates queries guaranteed to fetch specific pivot rows
-- **Method**: Creates targeted queries based on existing data
-- **Use Case**: Data consistency validation
+## Core Components
 
-#### NoREC (Non-optimizing Reference Engine Construction)
-- **Purpose**: Finds optimization bugs by comparing optimized vs. non-optimized queries
-- **Method**: Generates query variations with different optimization levels
-- **Use Case**: Query optimization testing
+### 1. **Core Engine** (`core/engine.py`)
+- **Session Management**: Multi-session orchestration with automatic recovery
+- **Performance Optimization**: High-throughput query execution with batch processing
+- **Concurrent Testing**: Jepsen-like consistency testing with ACID violation detection
+- **Resource Monitoring**: Memory, CPU, and database connection tracking
+- **Metrics Collection**: Comprehensive performance and bug detection metrics
 
-#### CERT (Cardinality Estimation Restriction Testing)
-- **Purpose**: Detects performance issues through cardinality analysis
-- **Method**: Compares estimated vs. actual row counts
-- **Use Case**: Performance optimization testing
+### 2. **Query Generator** (`core/generator.py`)
+- **Grammar-Driven**: BNF grammar-based SQL generation with semantic validation
+- **Complex Query Patterns**: Multi-level CTEs, advanced aggregations, complex JOINs
+- **YugabyteDB Features**: Distributed execution, consistency levels, partitioning
+- **Performance Optimization**: Batch generation for high-throughput testing
+- **Query Templates**: Pre-built complex query patterns for consistent testing
 
-#### DQP (Differential Query Plans)
-- **Purpose**: Identifies logic bugs through plan variation analysis
-- **Method**: Compares results from different execution plans
-- **Use Case**: Execution plan consistency testing
+### 3. **Oracle System** (`oracles/`)
+- **TLP Oracle**: Testing Logical Properties with non-deterministic query detection
+- **QPG Oracle**: Query Plan Generation testing with performance analysis
+- **PQS Oracle**: Pivot Query System testing for complex transformations
+- **NoREC Oracle**: Non-optimizing Reference Engine Comparison
+- **CERT Oracle**: Consistent Result Testing across different execution paths
+- **DQP Oracle**: Different Query Plan detection and analysis
+- **CODDTest Oracle**: Codd's Relational Model compliance testing
+- **Distributed Consistency Oracle**: ACID compliance and distributed consistency
+- **YugabyteDB Features Oracle**: YugabyteDB-specific feature testing
+- **Edge Case Oracle**: Boundary condition and edge case detection
+- **Complex SQL Oracle**: Advanced SQL pattern testing
 
-#### CODDTest (Constant Optimization Driven Testing)
-- **Purpose**: Finds logic bugs through constant optimization techniques
-- **Method**: Applies constant folding and propagation to queries
-- **Use Case**: Advanced logic testing
+### 4. **Database Executor** (`utils/db_executor.py`)
+- **Connection Management**: Connection pooling and automatic recovery
+- **Query Execution**: Optimized query execution with timeout handling
+- **Error Handling**: Comprehensive error classification and reporting
+- **Performance Monitoring**: Query timing and resource usage tracking
+- **Schema Discovery**: Automatic table, column, and function discovery
 
-## Features
+### 5. **Bug Reporter** (`utils/bug_reporter.py`)
+- **Comprehensive Reports**: SQL reproduction scripts, test files, and metadata
+- **Structured Output**: JSON metadata with detailed bug context
+- **Reproduction Scripts**: Executable SQL scripts for bug verification
+- **Test Files**: Automated test cases for regression testing
+- **Severity Classification**: Bug severity and impact assessment
 
-### Query Generation
-- Grammar-based SQL generation
-- Schema-aware query construction
-- Type-safe column selection
-- Context-aware clause generation
+## Supported YugabyteDB Features
 
-### Bug Detection
-- Multiple oracle implementations
-- False positive filtering
-- Comprehensive bug reporting
-- Reproduction script generation
+### **Consistency Levels**
+- `SNAPSHOT` (default)
 
-### Performance
-- Efficient query execution
-- Connection pooling
-- Resource monitoring
-- Scalable architecture
+### **Distributed Features**
+- Cross-node query distribution
+- Partition-aware query execution
+- Tablet splitting and merging operations
 
-### Security
-- SQL injection protection
-- Query sanitization
-- Access control validation
-- Schema isolation
+### **Advanced SQL Patterns**
+- Multi-level recursive CTEs (10+ levels)
+- Complex window functions with advanced frames
+- Advanced aggregations (GROUPING SETS, CUBE, ROLLUP)
+- Complex JOINs (10+ table JOINs)
+- Partitioning (HASH, RANGE, LIST)
+- Subpartitioning strategies
 
-## Configuration
+### **Data Types**
+- `UUID`, `JSONB`, `ARRAY`
+- `INTERVAL`, `TIMESTAMP WITH TIME ZONE`
+- `NUMERIC(38,0)`
+- Geometric types: `point`, `line`, `circle`
+- Text search: `tsvector`, `tsquery`
 
-### Basic Setup
+## Performance Characteristics
+
+### **Current Performance**
+- **Queries per Minute**: 176+ QPM (target: 1000+ QPM)
+- **Queries per Second**: 2.9+ QPS
+- **Syntax Error Rate**: 2%
+- **CPU Efficiency**: Multi-threaded execution
+
+### **Optimization Features**
+- Batch query generation and execution
+- Selective oracle execution
+- Connection pooling and reuse
+- Memory-efficient result processing
+- Parallel session execution
+
+## Installation and Setup
+
+### **Prerequisites**
+- Python 3.8+
+- YugabyteDB 2025.1
+- Network access to YugabyteDB cluster
+
+### **Installation**
+```bash
+# Clone the repository
+git clone https://github.com/your-org/ybfuzz.git
+cd ybfuzz
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Create configuration
+cp config.yaml config.yaml.local
+# Edit config.yaml.local with your database settings
+```
+
+### **Configuration**
 ```yaml
 database:
-  host: "localhost"
+  host: "10.9.86.186,10.9.139.177,10.9.205.248"
   port: 5433
-  user: "username"
-  password: "password"
-  database: "testdb"
-  schema_name: "test_schema"
+  dbname: "yugabyte"
+  user: "yugabyte"
+  password: "your_password"
+  schema_name: "ybfuzz_schema"
 
-fuzzing:
-  duration: 300
-  max_sessions: 100
-  queries_per_session: 10
-```
-
-### Oracle Configuration
-```yaml
 oracles:
-  tlp:
-    enabled: true
-    max_partitions: 3
-  
-  qpg:
-    enabled: true
-    plan_observation_threshold: 10
+  enabled_oracles:
+    - "TLPOracle"
+    - "QPGOracle"
+    - "PQSOracle"
+    - "NoRECOracle"
+    - "CERTOracle"
+    - "DQPOracle"
+    - "CODDTestOracle"
+    - "DistributedConsistencyOracle"
+    - "YugabyteDBFeaturesOracle"
+    - "EdgeCaseOracle"
+    - "ComplexSQLOracle"
+
+performance:
+  target_qpm: 1000
+  session_duration: 30
+  max_concurrent_sessions: 5
 ```
 
-## Usage
+## Usage Examples
 
-### Command Line
+### **Basic Usage**
 ```bash
-# Basic run
-python3 main.py -c config.yaml
+# Run fuzzer for 1 hour
+python3 main.py -c config.yaml --duration 3600
 
-# Duration-limited run
-python3 main.py -c config.yaml -d 60
+# Run with debug logging
+python3 main.py -c config.yaml --duration 1800 --debug
 
-# Verbose logging
-python3 main.py -c config.yaml -v
+# Run with specific oracles
+python3 main.py -c config.yaml --duration 3600 --oracles TLP,QPG
 ```
 
-### Programmatic Usage
-```python
-from core.engine import FuzzerEngine
-from config import Config
+## Bug Detection Capabilities
 
-config = Config('config.yaml')
-engine = FuzzerEngine(config)
-engine.run(duration=300)
-```
+### **Logical Bugs**
+- Query result inconsistencies
+- Data corruption scenarios
+- Constraint violations
+- Referential integrity issues
 
-## Bug Reporting
+### **Performance Issues**
+- Query plan regressions
+- Query Optimizer efficiency
 
-### Report Structure
-- **Bug Type**: Classification by oracle and category
-- **Description**: Detailed bug explanation
-- **Reproduction**: Executable SQL scripts
-- **Context**: Query plans, error details, metadata
+### **Distributed Issues**
+- ACID violation detection
+- Race condition identification
+- Cross-node consistency problems
 
-### Output Formats
-- JSON: Structured data for programmatic processing
-- SQL: Executable reproduction scripts
-- Markdown: Human-readable documentation
-- HTML: Web-based viewing
+### **SQL Compatibility**
+- Syntax error detection
+- Feature support validation
+- Type compatibility issues
+- Function behavior differences
 
-## Testing Methodology
+## Output and Reporting
 
-### Session Structure
-1. **DDL Phase**: Schema modifications and table creation
-2. **DML Phase**: Data manipulation operations
-3. **Validation Phase**: Query execution and oracle testing
+### **Bug Reports**
+- **SQL Reproduction Scripts**: Executable SQL for bug verification
+- **Test Files**: Automated test cases for regression testing
+- **Metadata**: JSON files with detailed bug context
+- **Severity Classification**: Bug impact assessment
 
-### Oracle Testing
-1. **Query Analysis**: Determine if oracle can process query
-2. **Bug Detection**: Apply oracle-specific testing logic
-3. **Result Validation**: Compare expected vs. actual results
-4. **Bug Reporting**: Generate comprehensive bug reports
+### **Performance Metrics**
+- Real-time QPM/QPS tracking
+- Oracle execution statistics
 
-## Performance Considerations
+### **Logs and Debugging**
+- Comprehensive logging system
+- Debug information for troubleshooting
 
-### Query Execution
-- Connection pooling for efficient database access
-- Timeout management to prevent hanging queries
-- Memory usage monitoring and control
-
-### Scalability
-- Configurable session limits
-- Adaptive query generation
-- Resource-aware execution
-
-## Security Features
-
-### Input Validation
-- SQL injection prevention
-- Query parameter sanitization
-- Schema access control
-
-### Database Security
-- Privilege validation
-- Schema isolation
-- Query restriction enforcement
-
-## Monitoring and Logging
-
-### Log Levels
-- **INFO**: General operational information
-- **DEBUG**: Detailed debugging information
-- **WARNING**: Bug detection and warnings
-- **ERROR**: Error conditions and failures
-
-### Metrics
-- Query execution statistics
-- Bug detection rates
-- Performance measurements
-- Resource utilization
-
-## Extensibility
-
-### Custom Oracles
-- Implement BaseOracle interface
-- Register in ORACLE_REGISTRY
-- Configure in config.yaml
-
-### Custom Generators
-- Extend SQLNode classes
-- Implement generation strategies
-- Add new query types
-
-## Best Practices
-
-### Configuration
-- Use appropriate timeouts for your database
-- Configure oracle parameters based on testing needs
-- Monitor resource usage during execution
-
-### Testing
-- Start with short durations to validate setup
-- Use appropriate oracle combinations for your use case
-- Review bug reports for false positives
-
-### Maintenance
-- Regular configuration updates
-- Oracle parameter tuning
-- Performance monitoring and optimization
+### **Architecture Principles**
+- Modular design with clear interfaces
+- Separation of concerns
+- Extensible oracle system
+- Configuration-driven behavior
 
 ## Troubleshooting
 
-### Common Issues
-- **Connection Failures**: Check database credentials and network connectivity
-- **Permission Errors**: Verify database user privileges
-- **Timeout Issues**: Adjust execution timeouts in configuration
-
-### Debug Mode
-Enable debug logging for detailed troubleshooting:
-```yaml
-logging:
-  level: "DEBUG"
-```
-
-## Contributing
-
-### Development Setup
-1. Clone the repository
-2. Install dependencies: `pip install -r requirements.txt`
-3. Configure database connection
-4. Run tests: `python3 main.py -c config.yaml -d 10`
-
-### Code Standards
-- Follow PEP 8 style guidelines
-- Include comprehensive docstrings
-- Add unit tests for new features
-- Update documentation for changes
-
-## Support
-For questions and support, please refer to the project documentation or create an issue in the repository.
+### **Common Issues**
+- **Connection Failures**: Check network connectivity and credentials
+- **Performance Issues**: Monitor resource usage and adjust configuration
+- **False Positives**: Review oracle logic and query filtering

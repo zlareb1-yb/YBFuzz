@@ -40,8 +40,15 @@ class Grammar:
         """
         self.logger.debug("Validating grammar integrity...")
         all_rule_names = set(self._rules.keys())
+        
+        # Define SQL keywords that are valid terminals
+        sql_keywords = {"SUM", "AVG", "MIN", "MAX", "COUNT", "CREATE", "TABLE", "VIEW", "INDEX", "INSERT", "UPDATE", "DELETE", "SELECT", "FROM", "WHERE", "GROUP", "BY", "LIMIT", "AS", "ON", "INTO", "VALUES", "SET", "AND", "OR", "=", "<>", "<", "<=", ">", ">=", "+", "-", "*", "/", "STAR", "LPAREN", "RPAREN", "COMMA", "DOT", "EQ", "NE", "LT", "LTE", "GT", "GTE", "ASC", "DESC", "INT", "TEXT", "VARCHAR", "BOOLEAN", "TIMESTAMP", "NUMERIC", "PRIMARY_KEY", "NOT_NULL", "UNIQUE"}
 
         for rule_name, rule_def in self._rules.items():
+            # Skip terminal rules (those that are just strings)
+            if isinstance(rule_def, str):
+                continue
+                
             if rule_def.get("type") == "choice":
                 for option in rule_def.get("options", []):
                     # Choice options can be either rule names or string literals
@@ -49,13 +56,17 @@ class Grammar:
                     # Only validate if the option is a rule name (not a string literal)
                     if isinstance(option, str) and option not in all_rule_names:
                         # Check if this looks like a string literal (all caps, common SQL keywords)
-                        sql_keywords = {"SUM", "AVG", "MIN", "MAX", "COUNT", "CREATE", "TABLE", "VIEW", "INDEX", "INSERT", "UPDATE", "DELETE", "SELECT", "FROM", "WHERE", "GROUP", "BY", "LIMIT", "AS", "ON", "INTO", "VALUES", "SET", "AND", "OR", "=", "<>", "<", "<=", ">", ">=", "+", "-", "*", "/"}
                         if option not in sql_keywords:
                             self._fail_validation(f"Rule '{rule_name}' refers to an undefined choice option: '{option}'")
             
             elif rule_def.get("type") == "sequence":
                 for element in rule_def.get("elements", []):
-                    if element.get("type") == "non_terminal":
+                    # Handle both string elements and object elements
+                    if isinstance(element, str):
+                        # String element - validate it's a defined rule or terminal
+                        if element not in all_rule_names and element not in sql_keywords:
+                            self._fail_validation(f"Rule '{rule_name}' refers to an undefined element: '{element}'")
+                    elif isinstance(element, dict) and element.get("type") == "non_terminal":
                         if element["rule"] not in all_rule_names:
                             self._fail_validation(f"Rule '{rule_name}' refers to an undefined non-terminal: '{element['rule']}'")
         
