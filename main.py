@@ -26,7 +26,7 @@ try:
     import psycopg2
     import psycopg2.extras
 except ImportError as e:
-    print(f"❌ Critical dependency missing: {e}")
+    print(f"ERROR: Critical dependency missing: {e}")
     print("Please install required packages: pip install pyyaml psycopg2-binary")
     sys.exit(1)
 
@@ -37,7 +37,7 @@ try:
     from utils.bug_reporter import BugReporter
     from utils.db_executor import DBExecutor
 except ImportError as e:
-    print(f"❌ Failed to import YBFuzz components: {e}")
+    print(f"ERROR: Failed to import YBFuzz components: {e}")
     print("Please ensure all components are properly installed")
     sys.exit(1)
 
@@ -128,9 +128,9 @@ def signal_handler(signum: int, frame) -> None:
     if fuzzer_engine:
         try:
             fuzzer_engine.shutdown()
-            print("✅ Fuzzer shutdown completed successfully")
+            print("SUCCESS: Fuzzer shutdown completed successfully")
         except Exception as e:
-            print(f"⚠️  Error during shutdown: {e}")
+            print(f"WARNING: Error during shutdown: {e}")
     
     sys.exit(0)
 
@@ -145,26 +145,26 @@ def validate_environment() -> bool:
     
     # Check Python version
     if sys.version_info < (3, 8):
-        print("❌ Python 3.8+ required")
+        print("ERROR: Python 3.8+ required")
         return False
     
     # Check required directories
     required_dirs = ['logs', 'bug_reproductions', 'corpus', 'evolved_corpus']
     for dir_name in required_dirs:
         Path(dir_name).mkdir(exist_ok=True)
-        print(f"✅ Directory '{dir_name}' ready")
+        print(f"SUCCESS: Directory '{dir_name}' ready")
     
     # Check write permissions
     try:
         test_file = Path("logs/test_write.tmp")
         test_file.write_text("test")
         test_file.unlink()
-        print("✅ Write permissions verified")
+        print("SUCCESS: Write permissions verified")
     except Exception as e:
-        print(f"❌ Write permission error: {e}")
+        print(f"ERROR: Write permission error: {e}")
         return False
     
-    print("✅ Environment validation completed successfully")
+    print("SUCCESS: Environment validation completed successfully")
     return True
 
 def main() -> int:
@@ -243,7 +243,7 @@ Examples:
             return 1
         
         # Load and validate configuration
-        print("📋 Loading configuration...")
+        print("Loading configuration...")
         config = load_config(args.config)
         
         # Override config with command line arguments
@@ -258,11 +258,11 @@ Examples:
         
         # Validate configuration
         if not validate_config(config):
-            print("❌ Configuration validation failed")
+            print("ERROR: Configuration validation failed")
             return 1
         
         if args.validate_only:
-            print("✅ Configuration validation completed successfully")
+            print("SUCCESS: Configuration validation completed successfully")
             return 0
         
         # Setup logging
@@ -288,7 +288,7 @@ Examples:
         except KeyboardInterrupt:
             logger.info("🛑 Fuzzing interrupted by user")
         except Exception as e:
-            logger.error(f"❌ Fuzzing failed: {e}")
+            logger.error(f"ERROR: Fuzzing failed: {e}")
             logger.error(f"Traceback: {traceback.format_exc()}")
             return 1
         
@@ -296,7 +296,7 @@ Examples:
         end_time = time.time()
         total_time = end_time - start_time
         
-        logger.info("📊 Final Statistics:")
+        logger.info("Final Statistics:")
         logger.info(f"   Total Runtime: {total_time:.2f} seconds")
         logger.info(f"   Queries Executed: {fuzzer_engine.stats.get('queries_executed', 0)}")
         logger.info(f"   Bugs Found: {fuzzer_engine.stats.get('bugs_found', 0)}")
@@ -306,7 +306,7 @@ Examples:
         return 0
         
     except Exception as e:
-        print(f"❌ Critical error in main: {e}")
+        print(f"ERROR: Critical error in main: {e}")
         print(f"Traceback: {traceback.format_exc()}")
         return 1
         
@@ -316,7 +316,7 @@ Examples:
             try:
                 fuzzer_engine.shutdown()
             except Exception as e:
-                print(f"⚠️  Error during cleanup: {e}")
+                print(f"WARNING: Error during cleanup: {e}")
 
 if __name__ == "__main__":
     exit_code = main()

@@ -99,6 +99,42 @@ class YugabyteDBFeaturesOracle:
             "SELECT t1.table_schema, t2.table_type, COUNT(*) as join_count FROM information_schema.tables t1 INNER JOIN information_schema.tables t2 ON t1.table_schema = t2.table_schema WHERE t1.table_name < t2.table_name GROUP BY t1.table_schema, t2.table_type HAVING COUNT(*) > 1"
         ]
         
+        # Advanced distributed testing patterns
+        self.advanced_distributed_patterns = [
+            # Multi-level distributed aggregations
+            "WITH distributed_stats AS (SELECT table_schema, COUNT(*) as table_count, AVG(LENGTH(table_name)) as avg_name_length FROM information_schema.tables GROUP BY table_schema), cross_analysis AS (SELECT t1.table_schema, t1.table_count, t1.avg_name_length, t2.table_schema as other_schema, t2.table_count as other_count FROM distributed_stats t1 CROSS JOIN distributed_stats t2 WHERE t1.table_schema != t2.table_schema) SELECT table_schema, table_count, avg_name_length, COUNT(*) as cross_references, AVG(other_count) as avg_other_count FROM cross_analysis GROUP BY table_schema, table_count, avg_name_length ORDER BY table_count DESC",
+            
+            # Complex distributed window functions
+            "SELECT table_schema, table_name, table_type, ROW_NUMBER() OVER (PARTITION BY table_schema ORDER BY table_name) as schema_rank, ROW_NUMBER() OVER (ORDER BY table_name) as global_rank, LAG(table_name, 1) OVER (PARTITION BY table_schema ORDER BY table_name) as prev_table, LEAD(table_name, 1) OVER (PARTITION BY table_schema ORDER BY table_name) as next_table, COUNT(*) OVER (PARTITION BY table_schema) as tables_in_schema FROM information_schema.tables WHERE table_schema NOT IN ('information_schema', 'pg_catalog') ORDER BY table_schema, table_name",
+            
+            # Distributed consistency testing
+            "SELECT t1.table_schema, t1.table_name, t2.column_name, t2.data_type, t3.constraint_name, t3.constraint_type FROM information_schema.tables t1 INNER JOIN information_schema.columns t2 ON t1.table_name = t2.table_name AND t1.table_schema = t2.table_schema LEFT JOIN information_schema.table_constraints t3 ON t1.table_name = t3.table_name AND t1.table_schema = t3.table_schema WHERE t1.table_schema NOT IN ('information_schema', 'pg_catalog') ORDER BY t1.table_schema, t1.table_name, t2.ordinal_position"
+        ]
+        
+        # YugabyteDB-specific distributed execution patterns
+        self.yb_distributed_patterns = [
+            # Hash-based distribution testing
+            "SELECT yb_hash_code(table_name::text) as hash_value, table_schema, COUNT(*) as table_count FROM information_schema.tables WHERE table_schema NOT IN ('information_schema', 'pg_catalog') GROUP BY yb_hash_code(table_name::text), table_schema ORDER BY hash_value",
+            
+            # Cross-node JOIN stress testing
+            "SELECT t1.table_schema as schema1, t2.table_schema as schema2, COUNT(*) as cross_schema_count FROM information_schema.tables t1 CROSS JOIN information_schema.tables t2 WHERE t1.table_schema != t2.table_schema AND t1.table_schema NOT IN ('information_schema', 'pg_catalog') AND t2.table_schema NOT IN ('information_schema', 'pg_catalog') GROUP BY t1.table_schema, t2.table_schema HAVING COUNT(*) > 1 ORDER BY cross_schema_count DESC",
+            
+            # Distributed aggregation with complex grouping
+            "SELECT table_schema, table_type, COUNT(*) as type_count, AVG(LENGTH(table_name)) as avg_name_length, STDDEV(LENGTH(table_name)) as name_length_stddev FROM information_schema.tables WHERE table_schema NOT IN ('information_schema', 'pg_catalog') GROUP BY table_schema, table_type HAVING COUNT(*) > 1 ORDER BY table_schema, type_count DESC"
+        ]
+        
+        # Advanced YugabyteDB optimization testing
+        self.yb_optimization_patterns = [
+            # Query plan guidance testing
+            "SELECT /*+ IndexScan(t) */ table_schema, table_name FROM information_schema.tables t WHERE table_schema NOT IN ('information_schema', 'pg_catalog') ORDER BY table_name",
+            
+            # Parallel execution testing
+            "SELECT /*+ Parallel(4) */ table_schema, COUNT(*) as table_count FROM information_schema.tables WHERE table_schema NOT IN ('information_schema', 'pg_catalog') GROUP BY table_schema ORDER BY table_count DESC",
+            
+            # Join optimization testing
+            "SELECT /*+ Leading(t1 t2) HashJoin(t1 t2) */ t1.table_schema, t1.table_name, t2.column_name FROM information_schema.tables t1 INNER JOIN information_schema.columns t2 ON t1.table_name = t2.table_name AND t1.table_schema = t2.table_schema WHERE t1.table_schema NOT IN ('information_schema', 'pg_catalog') ORDER BY t1.table_schema, t1.table_name"
+        ]
+        
         # Transaction isolation testing patterns
         self.transaction_patterns = [
             # Complex transaction scenarios

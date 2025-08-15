@@ -696,8 +696,8 @@ cleanup:
             # Log success
             self.logger.info(f"🐛 Bug report created: {bug_id}")
             self.logger.info(f"   📄 SQL reproduction: {sql_file_path}")
-            self.logger.info(f"   🧪 Test file: {test_file_path}")
-            self.logger.info(f"   📊 Metadata: {metadata_file_path}")
+            self.logger.info(f"   Test file: {test_file_path}")
+            self.logger.info(f"   Metadata: {metadata_file_path}")
             self.logger.info(f"   🔍 Oracle: {bug_data['oracle_name']}, Severity: {bug_data.get('severity', 'UNKNOWN')}")
             
             return bug_id

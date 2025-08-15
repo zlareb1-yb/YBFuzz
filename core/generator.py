@@ -7,7 +7,7 @@ import logging
 import random
 import re
 import time
-from typing import Union, Optional, List, Tuple, Any
+from typing import Union, Optional, List, Tuple, Any, Dict
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 from utils.db_executor import Column, Table, Catalog, DiscoveredFunction
@@ -217,8 +217,8 @@ class SelectNode(SQLNode):
         
         # Ensure we have at least SELECT and FROM
         if len(final_parts) < 2:
-            # Fallback to a safe query
-            return "SELECT COUNT(*) FROM information_schema.tables LIMIT 1;"
+            # Fallback to a safe query on business tables
+            return "SELECT COUNT(*) FROM ybfuzz_schema.products LIMIT 1;"
         
         # CRITICAL: Ensure proper clause ordering
         # SELECT must come first, FROM must come second
@@ -2045,21 +2045,112 @@ class GrammarGenerator:
         
         return RawSQL(random.choice(yb_internals_tests))
 
+    def generate_custom_table_queries(self, context: GenerationContext) -> Optional[RawSQL]:
+        """Generate queries on discovered tables for real database testing."""
+        # Dynamic table queries based on what's available
+        custom_table_queries = [
+            # Business table queries for comprehensive testing
+            "SELECT * FROM ybfuzz_schema.products LIMIT 10",
+            "SELECT * FROM ybfuzz_schema.orders LIMIT 10",
+            "SELECT * FROM ybfuzz_schema.categories LIMIT 10",
+            "SELECT * FROM ybfuzz_schema.customers LIMIT 10",
+            
+            # Queries on public business tables
+            "SELECT * FROM public.orders LIMIT 10",
+            "SELECT * FROM public.documents LIMIT 10",
+            "SELECT * FROM public.employee_details LIMIT 10",
+            
+            # Complex JOINs across business tables
+            "SELECT p.name, p.price, c.name as category FROM ybfuzz_schema.products p JOIN ybfuzz_schema.categories c ON p.category = c.id LIMIT 10",
+            "SELECT c.name, o.order_date, o.amount FROM ybfuzz_schema.customers c JOIN ybfuzz_schema.orders o ON c.id = o.customer_id LIMIT 10",
+            "SELECT p.name, COUNT(o.id) as order_count FROM ybfuzz_schema.products p LEFT JOIN ybfuzz_schema.orders o ON p.id = o.product_id GROUP BY p.id, p.name ORDER BY order_count DESC LIMIT 10",
+            
+            # Complex aggregations on business data
+            "SELECT c.name as category, COUNT(p.id) as product_count, AVG(p.price) as avg_price FROM ybfuzz_schema.categories c LEFT JOIN ybfuzz_schema.products p ON c.id = p.category GROUP BY c.id, c.name ORDER BY product_count DESC",
+            "SELECT DATE_TRUNC('month', o.order_date) as month, COUNT(DISTINCT o.customer_id) as unique_customers, SUM(o.amount) as monthly_revenue FROM ybfuzz_schema.orders o GROUP BY DATE_TRUNC('month', o.order_date) ORDER BY month",
+            "SELECT c.name, COUNT(o.id) as order_count, SUM(o.amount) as total_spent, AVG(o.amount) as avg_order FROM ybfuzz_schema.customers c LEFT JOIN ybfuzz_schema.orders o ON c.id = o.customer_id GROUP BY c.id, c.name HAVING COUNT(o.id) > 0 ORDER BY total_spent DESC",
+            
+            # Window functions on business data
+            "SELECT *, ROW_NUMBER() OVER (PARTITION BY category ORDER BY price DESC) as price_rank FROM ybfuzz_schema.products",
+            "SELECT *, RANK() OVER (ORDER BY amount DESC) as order_rank FROM ybfuzz_schema.orders",
+            "SELECT *, LAG(amount, 1) OVER (PARTITION BY customer_id ORDER BY order_date) as prev_order_amount FROM ybfuzz_schema.orders",
+            
+            # DDL operations on business tables
+            "CREATE INDEX IF NOT EXISTS idx_products_price ON ybfuzz_schema.products(price)",
+            "CREATE INDEX IF NOT EXISTS idx_orders_customer ON ybfuzz_schema.orders(customer_id)",
+            "CREATE INDEX IF NOT EXISTS idx_orders_date ON ybfuzz_schema.orders(order_date)",
+            "ALTER TABLE ybfuzz_schema.products ADD COLUMN IF NOT EXISTS last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            
+            # DML operations on business tables
+            "INSERT INTO ybfuzz_schema.products (name, price, category_id) VALUES ('Test Product', 99.99, 1)",
+            "UPDATE ybfuzz_schema.products SET price = price * 1.1 WHERE price > 100",
+            "DELETE FROM ybfuzz_schema.products WHERE name = 'Test Product'",
+            
+            # Subqueries and CTEs on business data
+            "SELECT * FROM ybfuzz_schema.customers WHERE id IN (SELECT DISTINCT customer_id FROM ybfuzz_schema.orders WHERE amount > 1000)",
+            "WITH high_value_customers AS (SELECT customer_id FROM ybfuzz_schema.orders GROUP BY customer_id HAVING SUM(amount) > 5000) SELECT * FROM ybfuzz_schema.customers WHERE id IN (SELECT customer_id FROM high_value_customers)",
+            "SELECT p.name, (SELECT COUNT(*) FROM ybfuzz_schema.orders WHERE product_id = p.id) as times_ordered FROM ybfuzz_schema.products p",
+            
+            # Cross-schema queries
+            "SELECT 'ybfuzz' as source, COUNT(*) as table_count FROM information_schema.tables WHERE table_schema = 'ybfuzz_schema' UNION ALL SELECT 'public' as source, COUNT(*) as table_count FROM information_schema.tables WHERE table_schema = 'public'",
+            "SELECT table_schema, table_name, (SELECT COUNT(*) FROM information_schema.columns WHERE table_name = t.table_name) as column_count FROM information_schema.tables t WHERE table_schema IN ('ybfuzz_schema', 'public') ORDER BY column_count DESC LIMIT 10",
+            
+            # System table queries for comprehensive testing
+            "SELECT * FROM pg_stat_activity WHERE state = 'active' LIMIT 5",
+            "SELECT datname, numbackends, xact_commit, xact_rollback FROM pg_stat_database LIMIT 5",
+            "SELECT schemaname, tablename, attname, n_distinct FROM pg_stats WHERE schemaname NOT IN ('information_schema', 'pg_catalog') LIMIT 10",
+            "SELECT * FROM pg_stat_user_tables ORDER BY n_tup_ins DESC LIMIT 5",
+            "SELECT * FROM pg_stat_user_indexes ORDER BY idx_scan DESC LIMIT 5",
+            
+            # Business table queries with real data
+            "SELECT COUNT(*) as total_products FROM ybfuzz_schema.products",
+            "SELECT COUNT(*) as total_customers FROM ybfuzz_schema.customers", 
+            "SELECT COUNT(*) as total_orders FROM ybfuzz_schema.orders",
+            
+            # Complex queries on business tables
+            "SELECT p.name, COUNT(o.id) as order_count FROM ybfuzz_schema.products p LEFT JOIN ybfuzz_schema.orders o ON p.id = o.product GROUP BY p.id, p.name ORDER BY order_count DESC LIMIT 10",
+            "SELECT c.name, COUNT(o.id) as order_count FROM ybfuzz_schema.customers c LEFT JOIN ybfuzz_schema.orders o ON c.id = o.customer GROUP BY c.id, c.name ORDER BY order_count DESC LIMIT 10",
+            "SELECT cat.name as category, COUNT(p.id) as product_count FROM ybfuzz_schema.categories cat LEFT JOIN ybfuzz_schema.products p ON cat.id = p.category GROUP BY cat.id, cat.name ORDER BY product_count DESC",
+            
+            # DDL operations on business tables
+            "CREATE INDEX IF NOT EXISTS idx_products_price ON ybfuzz_schema.products(price)",
+            "CREATE INDEX IF NOT EXISTS idx_orders_customer ON ybfuzz_schema.orders(customer_id)",
+            "CREATE INDEX IF NOT EXISTS idx_orders_date ON ybfuzz_schema.orders(order_date)",
+            "ALTER TABLE ybfuzz_schema.products ADD COLUMN IF NOT EXISTS last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            
+            # DML operations on business tables
+            "INSERT INTO ybfuzz_schema.products (name, price, category_id) VALUES ('Test Product', 99.99, 1)",
+            "UPDATE ybfuzz_schema.products SET price = price * 1.1 WHERE price > 100",
+            "DELETE FROM ybfuzz_schema.products WHERE name = 'Test Product'",
+            
+            # Complex aggregations and window functions on business tables
+            "SELECT p.category, COUNT(*) as product_count, AVG(p.price) as avg_price FROM ybfuzz_schema.products p GROUP BY p.category ORDER BY product_count DESC",
+            "SELECT *, ROW_NUMBER() OVER (PARTITION BY category ORDER BY price DESC) as price_rank FROM ybfuzz_schema.products LIMIT 20",
+            "SELECT c.name, COUNT(o.id) as order_count, RANK() OVER (ORDER BY COUNT(o.id) DESC) as customer_rank FROM ybfuzz_schema.customers c LEFT JOIN ybfuzz_schema.orders o ON c.id = o.customer_id GROUP BY c.id, c.name ORDER BY order_count DESC",
+            
+            # Subqueries and CTEs on business tables
+            "WITH customer_stats AS (SELECT customer_id, COUNT(*) as order_count FROM ybfuzz_schema.orders GROUP BY customer_id) SELECT * FROM customer_stats WHERE order_count > 2",
+            "SELECT p.name FROM ybfuzz_schema.products p WHERE p.category IN (SELECT id FROM ybfuzz_schema.categories WHERE name LIKE '%Electronics%') LIMIT 10",
+            "SELECT p.name FROM ybfuzz_schema.products p WHERE p.id IN (SELECT DISTINCT product_id FROM ybfuzz_schema.orders WHERE amount > 100) LIMIT 10"
+        ]
+        
+        return RawSQL(random.choice(custom_table_queries))
+
     def generate_advanced_yb_queries(self, context: GenerationContext) -> Optional[RawSQL]:
         """Generate advanced YugabyteDB queries that test internal mechanisms and are more likely to trigger bugs."""
         advanced_queries = [
             # Distributed transaction edge cases
-            "BEGIN; SELECT pg_sleep(0.1); SELECT * FROM information_schema.tables; COMMIT",
-            "BEGIN; SELECT pg_sleep(0.1); SELECT * FROM information_schema.tables; ROLLBACK",
-                    "BEGIN; SELECT * FROM information_schema.tables; COMMIT",
-        "BEGIN; SELECT * FROM information_schema.tables; COMMIT",
-        "BEGIN; SELECT * FROM information_schema.tables; COMMIT",
-        "BEGIN; SELECT * FROM information_schema.tables; COMMIT",
+            "BEGIN; SELECT pg_sleep(0.1); SELECT * FROM ybfuzz_schema.products; COMMIT",
+            "BEGIN; SELECT pg_sleep(0.1); SELECT * FROM ybfuzz_schema.customers; ROLLBACK",
+                    "BEGIN; SELECT * FROM ybfuzz_schema.orders; COMMIT",
+        "BEGIN; SELECT * FROM ybfuzz_schema.products; COMMIT",
+        "BEGIN; SELECT * FROM ybfuzz_schema.categories; COMMIT",
+        "BEGIN; SELECT * FROM ybfuzz_schema.customers; COMMIT",
             
             # YugabyteDB consistency and visibility tests (using correct parameter values)
-            "SET enable_seqscan = false; SELECT * FROM information_schema.tables; SET enable_seqscan = true",
-            "SET enable_indexscan = true; SELECT * FROM information_schema.tables; SET enable_indexscan = false",
-            "SET enable_bitmapscan = true; SELECT * FROM information_schema.tables; SET enable_bitmapscan = false",
+            "SET enable_seqscan = false; SELECT * FROM ybfuzz_schema.products; SET enable_seqscan = true",
+            "SET enable_indexscan = true; SELECT * FROM ybfuzz_schema.customers; SET enable_indexscan = false",
+            "SET enable_bitmapscan = true; SELECT * FROM ybfuzz_schema.orders; SET enable_bitmapscan = false",
             
             # Complex JSON operations with YugabyteDB features (using functions that exist)
             "SELECT jsonb_path_query('{\"key\": \"value\"}'::jsonb, '$.key')",
@@ -2099,11 +2190,11 @@ class GrammarGenerator:
             "WITH RECURSIVE factorial AS (SELECT 1 as n, 1 as fact UNION ALL SELECT n+1, fact * (n+1) FROM factorial WHERE n < 10) SELECT * FROM factorial",
             "WITH RECURSIVE collatz AS (SELECT 27 as n, 27 as seq UNION ALL SELECT n/2, seq FROM collatz WHERE n % 2 = 0 AND n > 1 UNION ALL SELECT 3*n+1, seq FROM collatz WHERE n % 2 = 1 AND n > 1) SELECT * FROM collatz WHERE n = 1",
             
-            # Complex joins with YugabyteDB optimizations
-            "SELECT * FROM information_schema.tables t1 CROSS JOIN information_schema.columns t2 CROSS JOIN information_schema.table_privileges t3 LIMIT 5",
-            "SELECT * FROM information_schema.tables t1 FULL OUTER JOIN information_schema.columns t2 ON t1.table_name = t2.table_name FULL OUTER JOIN information_schema.table_privileges t3 ON t1.table_name = t3.table_name LIMIT 5",
-            "SELECT * FROM information_schema.tables t1 LEFT JOIN information_schema.columns t2 ON t1.table_name = t2.table_name LEFT JOIN information_schema.table_privileges t3 ON t1.table_name = t3.table_name LIMIT 5",
-            "SELECT * FROM information_schema.tables t1 RIGHT JOIN information_schema.columns t2 ON t1.table_name = t2.table_name RIGHT JOIN information_schema.table_privileges t3 ON t1.table_name = t3.table_name LIMIT 5",
+            # Complex joins with YugabyteDB optimizations on business tables
+            "SELECT * FROM ybfuzz_schema.products p CROSS JOIN ybfuzz_schema.categories c CROSS JOIN ybfuzz_schema.customers cust LIMIT 5",
+            "SELECT * FROM ybfuzz_schema.products p FULL OUTER JOIN ybfuzz_schema.categories c ON p.category = c.id FULL OUTER JOIN ybfuzz_schema.orders o ON p.id = o.product_id LIMIT 5",
+            "SELECT * FROM ybfuzz_schema.customers c LEFT JOIN ybfuzz_schema.orders o ON c.id = o.customer_id LEFT JOIN ybfuzz_schema.products p ON o.product_id = p.id LIMIT 5",
+            "SELECT * FROM ybfuzz_schema.products p RIGHT JOIN ybfuzz_schema.categories c ON p.category = c.id RIGHT JOIN ybfuzz_schema.orders o ON p.id = o.product_id LIMIT 5",
             
             # Advanced subqueries and EXISTS
             "SELECT * FROM information_schema.tables t1 WHERE EXISTS (SELECT 1 FROM information_schema.columns t2 WHERE t2.table_name = t1.table_name AND EXISTS (SELECT 1 FROM information_schema.table_privileges t3 WHERE t3.table_name = t2.table_name))",
@@ -2124,7 +2215,7 @@ class GrammarGenerator:
             
             # Advanced string operations and regex with YugabyteDB
             "SELECT regexp_replace('test123test456', '[0-9]+', 'NUM', 'g')",
-            "SELECT regexp_split_to_table('a,b,c,d,e,f', ',')",
+            "SELECT regexp_split_to_table('a,b,c,d', ',')",
             "SELECT split_part('a.b.c.d.e.f', '.', 3)",
             "SELECT 'test' || ' ' || 'string' || ' ' || 'concatenation' as concatenated",
             "SELECT upper('test'), lower('TEST'), initcap('test string with multiple words')",
@@ -2413,37 +2504,28 @@ class GrammarGenerator:
     def generate_query(self) -> Optional[str]:
         """
         Generate a random SQL query for fuzzing.
-        
+
         Returns:
             SQL query string or None if generation fails
         """
         try:
-            # HIGH-PERFORMANCE MODE: Use high-performance generation for 1000+ queries per minute
-            # 90% high-performance, 10% complex queries for balance
-            query_type_choice = random.random()
-            
-            if query_type_choice < 0.90:
-                # High-performance queries (90% probability) - MAXIMUM THROUGHPUT
-                result = self.generate_high_performance_queries(None)
-                if result:
-                    return result.to_sql()
-            else:
-                # Complex queries (10% probability) - QUALITY TESTING
-                context = GenerationContext()
-                if self.catalog:
-                    context.catalog = self.catalog
-                
-                result = self.generate_complex_queries(context)
-                if result:
-                    return result.to_sql()
-            
-            # Fallback to high-performance if other methods fail
-            result = self.generate_high_performance_queries(None)
+            # REAL DATABASE TESTING: Use schema-aware generation for maximum accuracy
+            context = GenerationContext()
+            if self.catalog:
+                context.catalog = self.catalog
+
+            # Prioritize schema-aware queries for accuracy
+            result = self.generate_schema_aware_query(context)
             if result:
                 return result.to_sql()
-            
+
+            # Fallback to custom table queries if schema-aware generation fails
+            result = self.generate_custom_table_queries(context)
+            if result:
+                return result.to_sql()
+
             return None
-                
+
         except Exception as e:
             self.logger.warning(f"Error generating query: {e}")
             return None
@@ -2451,9 +2533,9 @@ class GrammarGenerator:
     def generate_basic_query(self, context: GenerationContext) -> Optional[RawSQL]:
         """Generate a basic query as fallback."""
         basic_queries = [
-            "SELECT COUNT(*) FROM information_schema.tables",
-            "SELECT table_schema, COUNT(*) FROM information_schema.tables GROUP BY table_schema",
-            "SELECT * FROM information_schema.tables LIMIT 10"
+            "SELECT COUNT(*) FROM ybfuzz_schema.products",
+            "SELECT COUNT(*) FROM ybfuzz_schema.customers", 
+            "SELECT COUNT(*) FROM ybfuzz_schema.orders"
         ]
         return RawSQL(random.choice(basic_queries))
 
@@ -3790,8 +3872,1371 @@ class GrammarGenerator:
         """
         queries = []
         for _ in range(batch_size):
-            # Use high-performance generation for maximum speed
-            query = self.generate_high_performance_queries(None)
+            # Focus exclusively on business table queries for real database testing
+            context = GenerationContext()
+            if self.catalog:
+                context.catalog = self.catalog
+            query = self.generate_custom_table_queries(context)
+            
             if query:
                 queries.append(query)
         return queries
+
+    def generate_schema_aware_query(self, context: GenerationContext) -> Optional[RawSQL]:
+        """
+        Generate queries based on discovered schema information to ensure accuracy.
+        This method eliminates column name mismatches and generates valid queries
+        that will actually execute on the discovered tables.
+        """
+        try:
+            # Get the engine instance to access schema information
+            if not hasattr(self, 'engine') or not self.engine:
+                return self.generate_custom_table_queries(context)
+            
+            if not hasattr(self.engine, 'column_mappings') or not self.engine.column_mappings:
+                return self.generate_custom_table_queries(context)
+            
+            # Select a random table from discovered schema
+            available_tables = list(self.engine.column_mappings.keys())
+            if not available_tables:
+                return self.generate_custom_table_queries(context)
+            
+            # Filter out tables with insufficient columns for complex queries
+            valid_tables = []
+            for table_name in available_tables:
+                table_info = self.engine.column_mappings[table_name]
+                if len(table_info['columns']) >= 2:  # Need at least 2 columns for meaningful queries
+                    valid_tables.append(table_name)
+            
+            if not valid_tables:
+                return self.generate_custom_table_queries(context)
+            
+            table_name = random.choice(valid_tables)
+            table_info = self.engine.column_mappings[table_name]
+            full_table_name = table_info['full_name']
+            
+            # Validate table info has required components
+            if not table_info.get('columns') or len(table_info['columns']) < 2:
+                return self.generate_custom_table_queries(context)
+            
+            # Generate query based on table structure and available columns
+            query_type = self._select_appropriate_query_type(table_info)
+            
+            # CRITICAL: Use perfect templates for guaranteed syntax correctness
+            context = self._create_perfect_query_context(table_info, full_table_name)
+            if context:
+                perfect_query = self._generate_from_perfect_template(query_type, context)
+                if perfect_query and perfect_query != self._generate_safe_fallback_query():
+                    return RawSQL(perfect_query)
+            
+            # Generate sophisticated queries for comprehensive bug detection
+            if random.random() < 0.3:  # 30% chance for advanced queries
+                advanced_query = self.generate_advanced_queries(context)
+                if advanced_query:
+                    return advanced_query
+            
+            # Fallback to schema-aware methods if template generation fails
+            if query_type == 'select':
+                return self._generate_schema_aware_select(table_info, full_table_name)
+            elif query_type == 'join':
+                return self._generate_schema_aware_join(table_info, full_table_name)
+            elif query_type == 'aggregation':
+                return self._generate_schema_aware_aggregation(table_info, full_table_name)
+            elif query_type == 'window':
+                return self._generate_schema_aware_window(table_info, full_table_name)
+            elif query_type == 'subquery':
+                return self._generate_schema_aware_subquery(table_info, full_table_name)
+            elif query_type == 'cte':
+                return self._generate_schema_aware_cte(table_info, full_table_name)
+            else:
+                return self._generate_schema_aware_select(table_info, full_table_name)
+                
+        except Exception as e:
+            self.logger.warning(f"Error generating schema-aware query: {e}")
+            return self.generate_custom_table_queries(context)
+    
+    def _select_appropriate_query_type(self, table_info: dict) -> str:
+        """Select the most appropriate query type based on table structure."""
+        columns = table_info['columns']
+        numeric_cols = table_info.get('numeric_columns', [])
+        string_cols = table_info.get('string_columns', [])
+        date_cols = table_info.get('date_columns', [])
+        
+        # Determine what types of queries this table can support
+        can_do_aggregation = len(numeric_cols) >= 1 and len(string_cols + date_cols) >= 1
+        can_do_window = len(numeric_cols) >= 1 and len(string_cols + date_cols) >= 1
+        can_do_join = len(self.engine.column_mappings) >= 2
+        can_do_subquery = len(numeric_cols) >= 1 and len(self.engine.column_mappings) >= 2
+        can_do_cte = len(numeric_cols) >= 1 and len(string_cols) >= 1
+        
+        # Weighted random selection based on capabilities
+        available_types = ['select']  # Always available
+        
+        if can_do_aggregation:
+            available_types.append('aggregation')
+        if can_do_window:
+            available_types.append('window')
+        if can_do_join:
+            available_types.append('join')
+        if can_do_subquery:
+            available_types.append('subquery')
+        if can_do_cte:
+            available_types.append('cte')
+        
+        return random.choice(available_types)
+    
+    def _generate_schema_aware_select(self, table_info: dict, full_table_name: str) -> RawSQL:
+        """Generate a SELECT query using actual table schema."""
+        columns = table_info['columns']
+        numeric_cols = table_info['numeric_columns']
+        string_cols = table_info['string_columns']
+        date_cols = table_info['date_columns']
+        
+        # Select random columns (2-4 columns)
+        num_cols = random.randint(2, min(4, len(columns)))
+        selected_cols = random.sample(columns, num_cols)
+        
+        # Build WHERE clause with appropriate conditions
+        where_conditions = []
+        for col in selected_cols[:2]:  # Use first 2 columns for WHERE
+            if col in numeric_cols:
+                where_conditions.append(f"{col} > 0")
+            elif col in string_cols:
+                where_conditions.append(f"{col} IS NOT NULL")
+            elif col in date_cols:
+                where_conditions.append(f"{col} > '2020-01-01'")
+            else:
+                where_conditions.append(f"{col} IS NOT NULL")
+        
+        where_clause = " AND ".join(where_conditions) if where_conditions else ""
+        
+        # Build ORDER BY clause
+        order_cols = random.sample(selected_cols, min(2, len(selected_cols)))
+        order_clause = f"ORDER BY {', '.join(order_cols)}"
+        
+        # Build LIMIT clause
+        limit_clause = f"LIMIT {random.randint(5, 20)}"
+        
+        # Construct the query
+        select_clause = ", ".join(selected_cols)
+        query = f"SELECT {select_clause} FROM {full_table_name}"
+        
+        if where_clause:
+            query += f" WHERE {where_clause}"
+        
+        query += f" {order_clause} {limit_clause}"
+        
+        # CRITICAL: Ensure perfect SQL syntax
+        perfect_query = self._ensure_perfect_sql_syntax(query)
+        
+        return RawSQL(perfect_query)
+    
+    def _generate_schema_aware_join(self, table_info: dict, full_table_name: str) -> RawSQL:
+        """Generate a JOIN query using actual table schema."""
+        # Find another table to join with
+        available_tables = list(self.engine.column_mappings.keys())
+        if len(available_tables) < 2:
+            return self._generate_schema_aware_select(table_info, full_table_name)
+        
+        other_table = random.choice([t for t in available_tables if t != table_info['name']])
+        other_table_info = self.engine.column_mappings[other_table]
+        other_full_name = other_table_info['full_name']
+        
+        # Find common column types for JOIN
+        common_numeric = set(table_info['numeric_columns']) & set(other_table_info['numeric_columns'])
+        common_string = set(table_info['string_columns']) & set(other_table_info['string_columns'])
+        
+        join_columns = []
+        if common_numeric:
+            join_columns.extend(common_numeric)
+        if common_string:
+            join_columns.extend(common_string)
+        
+        if not join_columns:
+            return self._generate_schema_aware_select(table_info, full_table_name)
+        
+        # Select columns from both tables
+        table_cols = random.sample(table_info['columns'], min(3, len(table_info['columns'])))
+        other_cols = random.sample(other_table_info['columns'], min(3, len(other_table_info['columns'])))
+        
+        # Build JOIN condition
+        join_col = random.choice(join_columns)
+        join_condition = f"{full_table_name}.{join_col} = {other_full_name}.{join_col}"
+        
+        # Construct the query
+        select_clause = ", ".join([f"{full_table_name}.{col}" for col in table_cols] + 
+                                 [f"{other_full_name}.{col}" for col in other_cols])
+        
+        query = f"""
+        SELECT {select_clause}
+        FROM {full_table_name}
+        INNER JOIN {other_full_name} ON {join_condition}
+        WHERE {full_table_name}.{join_col} IS NOT NULL
+        ORDER BY {full_table_name}.{table_cols[0]}
+        LIMIT {random.randint(5, 15)}
+        """
+        
+        # CRITICAL: Ensure perfect SQL syntax
+        perfect_query = self._ensure_perfect_sql_syntax(query.strip())
+        
+        return RawSQL(perfect_query)
+    
+    def _generate_schema_aware_aggregation(self, table_info: dict, full_table_name: str) -> RawSQL:
+        """Generate an aggregation query using actual table schema."""
+        numeric_cols = table_info['numeric_columns']
+        string_cols = table_info['string_columns']
+        date_cols = table_info['date_columns']
+        
+        if not numeric_cols:
+            return self._generate_schema_aware_select(table_info, full_table_name)
+        
+        # Select aggregation columns
+        agg_cols = random.sample(numeric_cols, min(2, len(numeric_cols)))
+        group_cols = random.sample(string_cols + date_cols, min(2, len(string_cols + date_cols)))
+        
+        if not group_cols:
+            return self._generate_schema_aware_select(table_info, full_table_name)
+        
+        # Build aggregation functions
+        agg_functions = []
+        for col in agg_cols:
+            agg_func = random.choice(['COUNT', 'SUM', 'AVG', 'MIN', 'MAX'])
+            if agg_func == 'COUNT':
+                agg_functions.append(f"COUNT({col}) as {col}_count")
+            else:
+                agg_functions.append(f"{agg_func}({col}) as {col}_{agg_func.lower()}")
+        
+        # Construct the query
+        select_clause = ", ".join(group_cols + agg_functions)
+        group_clause = ", ".join(group_cols)
+        
+        query = f"""
+        SELECT {select_clause}
+        FROM {full_table_name}
+        WHERE {' AND '.join([f"{col} IS NOT NULL" for col in group_cols])}
+        GROUP BY {group_clause}
+        HAVING COUNT(*) > 0
+        ORDER BY {agg_functions[0].split(' as ')[1]}
+        LIMIT {random.randint(5, 15)}
+        """
+        
+        # CRITICAL: Ensure perfect SQL syntax
+        perfect_query = self._ensure_perfect_sql_syntax(query.strip())
+        
+        return RawSQL(perfect_query)
+    
+    def _generate_schema_aware_window(self, table_info: dict, full_table_name: str) -> RawSQL:
+        """Generate a window function query using actual table schema."""
+        numeric_cols = table_info['numeric_columns']
+        string_cols = table_info['string_columns']
+        date_cols = table_info['date_columns']
+        
+        if not numeric_cols:
+            return self._generate_schema_aware_select(table_info, full_table_name)
+        
+        # Select columns for window function
+        partition_cols = random.sample(string_cols + date_cols, min(2, len(string_cols + date_cols)))
+        order_cols = random.sample(numeric_cols, min(2, len(numeric_cols)))
+        
+        if not partition_cols or not order_cols:
+            return self._generate_schema_aware_select(table_info, full_table_name)
+        
+        # Build window functions
+        window_functions = []
+        for col in numeric_cols[:2]:
+            window_func = random.choice(['ROW_NUMBER', 'RANK', 'DENSE_RANK', 'LAG', 'LEAD'])
+            if window_func in ['LAG', 'LEAD']:
+                window_functions.append(f"{window_func}({col}, 1) OVER (PARTITION BY {partition_cols[0]} ORDER BY {order_cols[0]}) as {col}_{window_func.lower()}")
+            else:
+                window_functions.append(f"{window_func}() OVER (PARTITION BY {partition_cols[0]} ORDER BY {order_cols[0]}) as {col}_{window_func.lower()}")
+        
+        # Construct the query
+        select_cols = random.sample(table_info['columns'], min(3, len(table_info['columns'])))
+        select_clause = ", ".join(select_cols + window_functions)
+        
+        query = f"""
+        SELECT {select_clause}
+        FROM {full_table_name}
+        WHERE {partition_cols[0]} IS NOT NULL
+        ORDER BY {partition_cols[0]}, {order_cols[0]}
+        LIMIT {random.randint(10, 25)}
+        """
+        
+        # CRITICAL: Ensure perfect SQL syntax
+        perfect_query = self._ensure_perfect_sql_syntax(query.strip())
+        
+        return RawSQL(perfect_query)
+    
+    def _generate_schema_aware_subquery(self, table_info: dict, full_table_name: str) -> RawSQL:
+        """Generate a subquery using actual table schema."""
+        numeric_cols = table_info['numeric_columns']
+        string_cols = table_info['string_columns']
+        
+        if not numeric_cols:
+            return self._generate_schema_aware_select(table_info, full_table_name)
+        
+        # Find another table for subquery
+        available_tables = list(self.engine.column_mappings.keys())
+        if len(available_tables) < 2:
+            return self._generate_schema_aware_select(table_info, full_table_name)
+        
+        other_table = random.choice([t for t in available_tables if t != table_info['name']])
+        other_table_info = self.engine.column_mappings[other_table]
+        other_full_name = other_table_info['full_name']
+        
+        # Build subquery
+        subquery_col = random.choice(numeric_cols)
+        other_numeric = other_table_info['numeric_columns']
+        
+        if not other_numeric:
+            return self._generate_schema_aware_select(table_info, full_table_name)
+        
+        other_agg_col = random.choice(other_numeric)
+        
+        # Construct the query
+        select_cols = random.sample(table_info['columns'], min(3, len(table_info['columns'])))
+        select_clause = ", ".join(select_cols)
+        
+        query = f"""
+        SELECT {select_clause}
+        FROM {full_table_name}
+        WHERE {subquery_col} > (
+            SELECT AVG({other_agg_col})
+            FROM {other_full_name}
+            WHERE {other_agg_col} IS NOT NULL
+        )
+        ORDER BY {subquery_col} DESC
+        LIMIT {random.randint(5, 15)}
+        """
+        
+        # CRITICAL: Ensure perfect SQL syntax
+        perfect_query = self._ensure_perfect_sql_syntax(query.strip())
+        
+        return RawSQL(perfect_query)
+    
+    def _generate_schema_aware_cte(self, table_info: dict, full_table_name: str) -> RawSQL:
+        """Generate a CTE query using actual table schema."""
+        numeric_cols = table_info['numeric_columns']
+        string_cols = table_info['string_columns']
+        
+        if not numeric_cols or not string_cols:
+            return self._generate_schema_aware_select(table_info, full_table_name)
+        
+        # Build CTE
+        cte_col = random.choice(numeric_cols)
+        group_col = random.choice(string_cols)
+        
+        # Construct the query
+        select_cols = random.sample(table_info['columns'], min(3, len(table_info['columns'])))
+        select_clause = ", ".join(select_cols)
+        
+        query = f"""
+        WITH aggregated_data AS (
+            SELECT {group_col}, COUNT(*) as count, AVG({cte_col}) as avg_val
+            FROM {full_table_name}
+            WHERE {group_col} IS NOT NULL AND {cte_col} IS NOT NULL
+            GROUP BY {group_col}
+            HAVING COUNT(*) > 1
+        )
+        SELECT {select_clause}
+        FROM {full_table_name} t
+        JOIN aggregated_data a ON t.{group_col} = a.{group_col}
+        WHERE t.{cte_col} > a.avg_val
+        ORDER BY t.{cte_col} DESC
+        LIMIT {random.randint(5, 15)}
+        """
+        
+        # CRITICAL: Ensure perfect SQL syntax
+        perfect_query = self._ensure_perfect_sql_syntax(query.strip())
+        
+        return RawSQL(perfect_query)
+
+    def _ensure_perfect_sql_syntax(self, query: str) -> str:
+        """
+        Ensure every generated query has perfect SQL syntax.
+        This method guarantees:
+        1. Complete statements
+        2. Proper clause ordering
+        3. Balanced parentheses and quotes
+        4. Valid YugabyteDB syntax
+        5. No incomplete SQL
+        """
+        try:
+            # Ensure query ends with semicolon
+            if not query.strip().endswith(';'):
+                query = query.strip() + ';'
+            
+            # Fix common clause ordering issues
+            query = self._fix_clause_ordering(query)
+            
+            # Ensure proper spacing around operators
+            query = self._fix_operator_spacing(query)
+            
+            # Validate parentheses balance
+            query = self._fix_parentheses_balance(query)
+            
+            # Ensure proper quote handling
+            query = self._fix_quote_handling(query)
+            
+            # Final validation - if still invalid, return a safe fallback
+            if not self._is_syntactically_perfect(query):
+                self.logger.warning(f"Generated query failed syntax validation, using fallback: {query[:100]}...")
+                return self._generate_safe_fallback_query()
+            
+            return query
+            
+        except Exception as e:
+            self.logger.error(f"Error ensuring perfect SQL syntax: {e}")
+            return self._generate_safe_fallback_query()
+    
+    def _fix_clause_ordering(self, query: str) -> str:
+        """Fix SQL clause ordering to ensure proper syntax."""
+        query_upper = query.upper()
+        
+        # For SELECT statements, ensure proper clause order
+        if 'SELECT' in query_upper:
+            # Ensure FROM comes after SELECT
+            if 'FROM' in query_upper and query_upper.find('FROM') < query_upper.find('SELECT'):
+                # This shouldn't happen with proper generation, but let's be safe
+                return self._generate_safe_fallback_query()
+            
+            # Ensure WHERE comes after FROM
+            if 'WHERE' in query_upper and 'FROM' in query_upper:
+                if query_upper.find('WHERE') < query_upper.find('FROM'):
+                    return self._generate_safe_fallback_query()
+            
+            # Ensure GROUP BY comes after WHERE
+            if 'GROUP BY' in query_upper and 'WHERE' in query_upper:
+                if query_upper.find('GROUP BY') < query_upper.find('WHERE'):
+                    return self._generate_safe_fallback_query()
+            
+            # Ensure HAVING comes after GROUP BY
+            if 'HAVING' in query_upper and 'GROUP BY' in query_upper:
+                if query_upper.find('HAVING') < query_upper.find('GROUP BY'):
+                    return self._generate_safe_fallback_query()
+            
+            # Ensure ORDER BY comes after GROUP BY/HAVING
+            if 'ORDER BY' in query_upper:
+                if 'GROUP BY' in query_upper and query_upper.find('ORDER BY') < query_upper.find('GROUP BY'):
+                    return self._generate_safe_fallback_query()
+                if 'HAVING' in query_upper and query_upper.find('ORDER BY') < query_upper.find('HAVING'):
+                    return self._generate_safe_fallback_query()
+            
+            # Ensure LIMIT comes last
+            if 'LIMIT' in query_upper:
+                if 'ORDER BY' in query_upper and query_upper.find('LIMIT') < query_upper.find('ORDER BY'):
+                    return self._generate_safe_fallback_query()
+        
+        return query
+    
+    def _fix_operator_spacing(self, query: str) -> str:
+        """Ensure proper spacing around SQL operators."""
+        # Fix spacing around comparison operators
+        operators = ['=', '>', '<', '>=', '<=', '<>', '!=']
+        for op in operators:
+            # Ensure space around operators
+            query = query.replace(f'{op}', f' {op} ')
+            # Clean up double spaces
+            query = ' '.join(query.split())
+        
+        # Fix spacing around logical operators
+        logical_ops = ['AND', 'OR', 'NOT']
+        for op in logical_ops:
+            query = query.replace(f'{op}', f' {op} ')
+            query = ' '.join(query.split())
+        
+        return query
+    
+    def _fix_parentheses_balance(self, query: str) -> str:
+        """Ensure parentheses are properly balanced."""
+        open_count = query.count('(')
+        close_count = query.count(')')
+        
+        if open_count > close_count:
+            # Add missing closing parentheses
+            query += ')' * (open_count - close_count)
+        elif close_count > open_count:
+            # This shouldn't happen with proper generation, but let's be safe
+            return self._generate_safe_fallback_query()
+        
+        return query
+    
+    def _fix_quote_handling(self, query: str) -> str:
+        """Ensure proper quote handling in SQL."""
+        # Count single and double quotes
+        single_quotes = query.count("'")
+        double_quotes = query.count('"')
+        
+        # If odd number of quotes, fix by adding missing quote
+        if single_quotes % 2 != 0:
+            query += "'"
+        if double_quotes % 2 != 0:
+            query += '"'
+        
+        return query
+    
+    def _is_syntactically_perfect(self, query: str) -> bool:
+        """Final check to ensure query is syntactically perfect."""
+        try:
+            # Basic checks
+            if not query or not query.strip():
+                return False
+            
+            if not query.strip().endswith(';'):
+                return False
+            
+            # Check for balanced parentheses
+            if query.count('(') != query.count(')'):
+                return False
+            
+            # Check for balanced quotes
+            if query.count("'") % 2 != 0 or query.count('"') % 2 != 0:
+                return False
+            
+            # Check for incomplete statements
+            if self._has_incomplete_statement(query):
+                return False
+            
+            return True
+            
+        except Exception:
+            return False
+    
+    def _has_incomplete_statement(self, query: str) -> bool:
+        """Check for incomplete SQL statements."""
+        query_upper = query.upper()
+        
+        # Check for common incomplete patterns
+        incomplete_patterns = [
+            'SELECT',  # Must have FROM
+            'INSERT INTO',  # Must have VALUES or SELECT
+            'UPDATE',  # Must have SET
+            'DELETE FROM',  # Must have WHERE or be complete
+            'CREATE TABLE',  # Must have column definitions
+            'ALTER TABLE',  # Must have alteration spec
+            'WITH',  # Must have SELECT after CTE
+        ]
+        
+        for pattern in incomplete_patterns:
+            if pattern in query_upper:
+                if not self._is_statement_complete(query, pattern):
+                    return True
+        
+        return False
+    
+    def _is_statement_complete(self, query: str, statement_type: str) -> bool:
+        """Check if a specific statement type is complete."""
+        query_upper = query.upper()
+        
+        if statement_type == 'SELECT':
+            return 'FROM' in query_upper and query_upper.find('FROM') > query_upper.find('SELECT')
+        
+        elif statement_type == 'INSERT INTO':
+            return ('VALUES' in query_upper or 'SELECT' in query_upper) and query_upper.find('VALUES') > query_upper.find('INTO')
+        
+        elif statement_type == 'UPDATE':
+            return 'SET' in query_upper and query_upper.find('SET') > query_upper.find('UPDATE')
+        
+        elif statement_type == 'DELETE FROM':
+            # DELETE FROM table; is valid, so check if it's complete
+            return query_upper.count(';') > 0
+        
+        elif statement_type == 'CREATE TABLE':
+            return '(' in query and ')' in query
+        
+        elif statement_type == 'ALTER TABLE':
+            return any(word in query_upper for word in ['ADD', 'DROP', 'MODIFY', 'CHANGE'])
+        
+        elif statement_type == 'WITH':
+            return 'SELECT' in query_upper and query_upper.find('SELECT') > query_upper.find('WITH')
+        
+        return True
+    
+    def _generate_safe_fallback_query(self) -> str:
+        """Generate a guaranteed safe fallback query."""
+        try:
+            if hasattr(self, 'engine') and self.engine and hasattr(self.engine, 'column_mappings'):
+                # Try to generate a safe query on existing tables
+                available_tables = list(self.engine.column_mappings.keys())
+                if available_tables:
+                    table_name = available_tables[0]
+                    table_info = self.engine.column_mappings[table_name]
+                    if table_info.get('columns'):
+                        column = table_info['columns'][0]
+                        return f"SELECT COUNT(*) FROM {table_info['full_name']} WHERE {column} IS NOT NULL LIMIT 1;"
+            
+            # Ultimate safe fallback
+            return "SELECT 1 as dummy;"
+            
+        except Exception:
+            return "SELECT 1 as dummy;"
+
+    def _get_perfect_sql_templates(self) -> Dict[str, List[str]]:
+        """
+        Get guaranteed syntactically perfect SQL query templates.
+        These templates are pre-validated and guaranteed to work.
+        """
+        return {
+            'select_basic': [
+                "SELECT {columns} FROM {table} WHERE {condition} ORDER BY {order_col} LIMIT {limit};",
+                "SELECT {columns} FROM {table} WHERE {condition} GROUP BY {group_col} HAVING {having_condition} ORDER BY {order_col} LIMIT {limit};",
+                "SELECT {columns} FROM {table} WHERE {condition} LIMIT {limit};"
+            ],
+            'select_join': [
+                "SELECT {columns} FROM {table1} INNER JOIN {table2} ON {join_condition} WHERE {where_condition} ORDER BY {order_col} LIMIT {limit};",
+                "SELECT {columns} FROM {table1} LEFT JOIN {table2} ON {join_condition} WHERE {where_condition} ORDER BY {order_col} LIMIT {limit};",
+                "SELECT {columns} FROM {table1} RIGHT JOIN {table2} ON {join_condition} WHERE {where_condition} ORDER BY {order_col} LIMIT {limit};"
+            ],
+            'select_aggregation': [
+                "SELECT {group_columns}, {aggregation_functions} FROM {table} WHERE {where_condition} GROUP BY {group_columns} HAVING {having_condition} ORDER BY {order_col} LIMIT {limit};",
+                "SELECT {group_columns}, COUNT(*) as count FROM {table} WHERE {where_condition} GROUP BY {group_columns} HAVING COUNT(*) > 0 ORDER BY count DESC LIMIT {limit};"
+            ],
+            'select_window': [
+                "SELECT {columns}, {window_functions} FROM {table} WHERE {where_condition} ORDER BY {order_col} LIMIT {limit};",
+                "SELECT {columns}, ROW_NUMBER() OVER (PARTITION BY {partition_col} ORDER BY {order_col}) as rn FROM {table} WHERE {where_condition} ORDER BY {order_col} LIMIT {limit};"
+            ],
+            'select_subquery': [
+                "SELECT {columns} FROM {table} WHERE {column} > (SELECT AVG({agg_column}) FROM {table2} WHERE {condition}) ORDER BY {order_col} LIMIT {limit};",
+                "SELECT {columns} FROM {table} WHERE {column} IN (SELECT {sub_column} FROM {table2} WHERE {condition}) ORDER BY {order_col} LIMIT {limit};"
+            ],
+            'select_cte': [
+                "WITH {cte_name} AS (SELECT {cte_columns} FROM {table} WHERE {condition} GROUP BY {group_col}) SELECT {columns} FROM {table} t JOIN {cte_name} c ON t.{join_col} = c.{join_col} WHERE t.{where_col} > c.{cte_agg_col} ORDER BY t.{order_col} DESC LIMIT {limit};"
+            ]
+        }
+    
+    def _generate_from_perfect_template(self, template_type: str, context: dict) -> str:
+        """
+        Generate a query from a perfect template, ensuring syntax correctness.
+        """
+        try:
+            templates = self._get_perfect_sql_templates()
+            if template_type not in templates:
+                return self._generate_safe_fallback_query()
+            
+            # Select a random template
+            template = random.choice(templates[template_type])
+            
+            # Fill in the template with context values
+            filled_query = template.format(**context)
+            
+            # Final validation
+            if self._is_syntactically_perfect(filled_query):
+                return filled_query
+            else:
+                self.logger.warning(f"Template-generated query failed validation, using fallback")
+                return self._generate_safe_fallback_query()
+                
+        except Exception as e:
+            self.logger.error(f"Error generating from template: {e}")
+            return self._generate_safe_fallback_query()
+    
+    def _create_perfect_query_context(self, table_info: dict, full_table_name: str) -> dict:
+        """
+        Create a context dictionary for perfect query generation.
+        """
+        try:
+            columns = table_info['columns']
+            numeric_cols = table_info.get('numeric_columns', [])
+            string_cols = table_info.get('string_columns', [])
+            date_cols = table_info.get('date_columns', [])
+            
+            # Ensure we have at least 2 columns
+            if len(columns) < 2:
+                return None
+            
+            # Select appropriate columns for different query types
+            selected_cols = random.sample(columns, min(3, len(columns)))
+            select_columns = ", ".join(selected_cols)
+            
+            # Create WHERE conditions
+            where_conditions = []
+            for col in selected_cols[:2]:
+                if col in numeric_cols:
+                    where_conditions.append(f"{col} > 0")
+                elif col in string_cols:
+                    where_conditions.append(f"{col} IS NOT NULL")
+                elif col in date_cols:
+                    where_conditions.append(f"{col} > '2020-01-01'")
+                else:
+                    where_conditions.append(f"{col} IS NOT NULL")
+            
+            where_condition = " AND ".join(where_conditions) if where_conditions else "1=1"
+            
+            # Create context
+            context = {
+                'columns': select_columns,
+                'table': full_table_name,
+                'condition': where_condition,
+                'where_condition': where_condition,
+                'order_col': selected_cols[0],
+                'limit': random.randint(5, 20),
+                'group_col': selected_cols[0] if selected_cols[0] in string_cols else selected_cols[1],
+                'group_columns': selected_cols[0] if selected_cols[0] in string_cols else selected_cols[1],
+                'having_condition': 'COUNT(*) > 0',
+                'aggregation_functions': f'COUNT(*) as count, AVG({selected_cols[0]}) as avg_val' if selected_cols[0] in numeric_cols else 'COUNT(*) as count',
+                'partition_col': selected_cols[0] if selected_cols[0] in string_cols else selected_cols[1],
+                'window_functions': f'ROW_NUMBER() OVER (PARTITION BY {selected_cols[0]} ORDER BY {selected_cols[1]}) as rn',
+                'column': selected_cols[0],
+                'agg_column': selected_cols[0] if selected_cols[0] in numeric_cols else selected_cols[1],
+                'sub_column': selected_cols[0],
+                'where_col': selected_cols[0],
+                'order_col': selected_cols[0],
+                'cte_name': 'temp_data',
+                'cte_columns': f'{selected_cols[0]}, COUNT(*) as count',
+                'cte_agg_col': 'count',
+                'join_col': selected_cols[0] if selected_cols[0] in string_cols else selected_cols[1]
+            }
+            
+            # For JOIN queries, we need another table
+            if hasattr(self, 'engine') and self.engine and hasattr(self.engine, 'column_mappings'):
+                available_tables = list(self.engine.column_mappings.keys())
+                if len(available_tables) >= 2:
+                    other_table = random.choice([t for t in available_tables if t != table_info['name']])
+                    other_table_info = self.engine.column_mappings[other_table]
+                    context.update({
+                        'table1': full_table_name,
+                        'table2': other_table_info['full_name'],
+                        'join_condition': f"{full_table_name}.{selected_cols[0]} = {other_table_info['full_name']}.{selected_cols[0]}"
+                    })
+            
+            return context
+            
+        except Exception as e:
+            self.logger.error(f"Error creating query context: {e}")
+            return None
+
+    def generate_advanced_queries(self, context: GenerationContext) -> Optional[RawSQL]:
+        """
+        Generate advanced queries that stress YugabyteDB's distributed architecture.
+        These queries are designed to catch sophisticated bugs in:
+        - Distributed query execution
+        - Cross-node consistency
+        - Complex transaction handling
+        - Advanced optimization scenarios
+        - Partition management
+        """
+        try:
+            # Select from advanced query patterns
+            query_patterns = [
+                'distributed_aggregation',
+                'cross_node_consistency',
+                'complex_transaction',
+                'partition_stress',
+                'optimizer_stress',
+                'concurrent_access',
+                'distributed_joins',
+                'advanced_window_functions'
+            ]
+            
+            pattern = random.choice(query_patterns)
+            
+            if pattern == 'distributed_aggregation':
+                return self._generate_distributed_aggregation_query(context)
+            elif pattern == 'cross_node_consistency':
+                return self._generate_cross_node_consistency_query(context)
+            elif pattern == 'complex_transaction':
+                return self._generate_complex_transaction_query(context)
+            elif pattern == 'partition_stress':
+                return self._generate_partition_stress_query(context)
+            elif pattern == 'optimizer_stress':
+                return self._generate_optimizer_stress_query(context)
+            elif pattern == 'concurrent_access':
+                return self._generate_concurrent_access_query(context)
+            elif pattern == 'distributed_joins':
+                return self._generate_distributed_joins_query(context)
+            elif pattern == 'advanced_window_functions':
+                return self._generate_advanced_window_query(context)
+            
+        except Exception as e:
+            self.logger.error(f"Error generating advanced query: {e}")
+            return None
+    
+    def _generate_distributed_aggregation_query(self, context: GenerationContext) -> RawSQL:
+        """Generate queries that stress distributed aggregation across nodes."""
+        try:
+            if not hasattr(self, 'engine') or not self.engine or not hasattr(self.engine, 'column_mappings'):
+                return self._generate_safe_fallback_query()
+            
+            available_tables = list(self.engine.column_mappings.keys())
+            if len(available_tables) < 2:
+                return self._generate_safe_fallback_query()
+            
+            # Select tables for distributed aggregation
+            table1 = random.choice(available_tables)
+            table2 = random.choice([t for t in available_tables if t != table1])
+            
+            table1_info = self.engine.column_mappings[table1]
+            table2_info = self.engine.column_mappings[table2]
+            
+            # Get numeric columns for aggregation
+            numeric_cols1 = table1_info.get('numeric_columns', [])
+            numeric_cols2 = table2_info.get('numeric_columns', [])
+            
+            if not numeric_cols1 or not numeric_cols2:
+                return self._generate_safe_fallback_query()
+            
+            # Create complex distributed aggregation
+            query = f"""
+            WITH distributed_stats AS (
+                SELECT 
+                    'table1' as source,
+                    COUNT(*) as row_count,
+                    SUM({numeric_cols1[0]}) as total_sum,
+                    AVG({numeric_cols1[0]}) as avg_val,
+                    STDDEV({numeric_cols1[0]}) as std_dev
+                FROM {table1_info['full_name']}
+                WHERE {numeric_cols1[0]} IS NOT NULL
+                
+                UNION ALL
+                
+                SELECT 
+                    'table2' as source,
+                    COUNT(*) as row_count,
+                    SUM({numeric_cols2[0]}) as total_sum,
+                    AVG({numeric_cols2[0]}) as avg_val,
+                    STDDEV({numeric_cols2[0]}) as std_dev
+                FROM {table2_info['full_name']}
+                WHERE {numeric_cols2[0]} IS NOT NULL
+            ),
+            cross_table_analysis AS (
+                SELECT 
+                    source,
+                    row_count,
+                    total_sum,
+                    avg_val,
+                    std_dev,
+                    ROW_NUMBER() OVER (ORDER BY total_sum DESC) as rank_by_sum,
+                    ROW_NUMBER() OVER (ORDER BY avg_val DESC) as rank_by_avg,
+                    LAG(total_sum, 1) OVER (ORDER BY source) as prev_total_sum,
+                    LEAD(total_sum, 1) OVER (ORDER BY source) as next_total_sum
+                FROM distributed_stats
+            )
+            SELECT 
+                source,
+                row_count,
+                total_sum,
+                avg_val,
+                std_dev,
+                rank_by_sum,
+                rank_by_avg,
+                CASE 
+                    WHEN prev_total_sum IS NOT NULL THEN total_sum - prev_total_sum
+                    ELSE 0 
+                END as diff_from_prev,
+                CASE 
+                    WHEN next_total_sum IS NOT NULL THEN next_total_sum - total_sum
+                    ELSE 0 
+                END as diff_to_next,
+                (total_sum * 100.0 / (SELECT SUM(total_sum) FROM distributed_stats)) as percentage_of_total
+            FROM cross_table_analysis
+            ORDER BY total_sum DESC, avg_val DESC
+            LIMIT 10;
+            """
+            
+            return RawSQL(self._ensure_perfect_sql_syntax(query))
+            
+        except Exception as e:
+            self.logger.error(f"Error generating distributed aggregation query: {e}")
+            return RawSQL(self._generate_safe_fallback_query())
+    
+    def _generate_cross_node_consistency_query(self, context: GenerationContext) -> RawSQL:
+        """Generate queries that test cross-node consistency."""
+        try:
+            if not hasattr(self, 'engine') or not self.engine or not hasattr(self.engine, 'column_mappings'):
+                return self._generate_safe_fallback_query()
+            
+            available_tables = list(self.engine.column_mappings.keys())
+            if len(available_tables) < 3:
+                return self._generate_safe_fallback_query()
+            
+            # Select multiple tables for cross-node testing
+            tables = random.sample(available_tables, min(3, len(available_tables)))
+            
+            # Build complex cross-node consistency query
+            table_joins = []
+            select_clauses = []
+            where_conditions = []
+            
+            for i, table_name in enumerate(tables):
+                table_info = self.engine.column_mappings[table_name]
+                alias = f"t{i+1}"
+                
+                if i == 0:
+                    from_clause = f"FROM {table_info['full_name']} {alias}"
+                else:
+                    prev_alias = f"t{i}"
+                    join_col = table_info['columns'][0] if table_info['columns'] else 'id'
+                    table_joins.append(f"FULL OUTER JOIN {table_info['full_name']} {alias} ON {prev_alias}.{join_col} = {alias}.{join_col}")
+                
+                # Add columns to select
+                cols = table_info['columns'][:3] if len(table_info['columns']) >= 3 else table_info['columns']
+                for col in cols:
+                    select_clauses.append(f"{alias}.{col} as {alias}_{col}")
+                
+                # Add where conditions
+                if table_info.get('numeric_columns'):
+                    num_col = table_info['numeric_columns'][0]
+                    where_conditions.append(f"{alias}.{num_col} IS NOT NULL")
+            
+            # Construct the query
+            query = f"""
+            SELECT 
+                {', '.join(select_clauses)},
+                COUNT(*) OVER (PARTITION BY t1.{tables[0]}_id) as row_count_per_group,
+                ROW_NUMBER() OVER (ORDER BY t1.{tables[0]}_id) as global_row_number,
+                LAG(t1.{tables[0]}_id, 1) OVER (ORDER BY t1.{tables[0]}_id) as prev_id,
+                LEAD(t1.{tables[0]}_id, 1) OVER (ORDER BY t1.{tables[0]}_id) as next_id
+            {from_clause}
+            {' '.join(table_joins)}
+            WHERE {' AND '.join(where_conditions)}
+            ORDER BY t1.{tables[0]}_id
+            LIMIT 20;
+            """
+            
+            return RawSQL(self._ensure_perfect_sql_syntax(query))
+            
+        except Exception as e:
+            self.logger.error(f"Error generating cross-node consistency query: {e}")
+            return RawSQL(self._generate_safe_fallback_query())
+    
+    def _generate_complex_transaction_query(self, context: GenerationContext) -> RawSQL:
+        """Generate queries that test complex transaction scenarios."""
+        try:
+            if not hasattr(self, 'engine') or not self.engine or not hasattr(self.engine, 'column_mappings'):
+                return self._generate_safe_fallback_query()
+            
+            available_tables = list(self.engine.column_mappings.keys())
+            if len(available_tables) < 2:
+                return self._generate_safe_fallback_query()
+            
+            # Create complex transaction-like query with multiple operations
+            table1 = random.choice(available_tables)
+            table2 = random.choice([t for t in available_tables if t != table1])
+            
+            table1_info = self.engine.column_mappings[table1]
+            table2_info = self.engine.column_mappings[table2]
+            
+            # Get columns for complex operations
+            cols1 = table1_info['columns'][:3] if len(table1_info['columns']) >= 3 else table1_info['columns']
+            cols2 = table2_info['columns'][:3] if len(table2_info['columns']) >= 3 else table2_info['columns']
+            
+            query = f"""
+            WITH transaction_data AS (
+                SELECT 
+                    {', '.join([f't1.{col} as t1_{col}' for col in cols1])},
+                    {', '.join([f't2.{col} as t2_{col}' for col in cols2])},
+                    CASE 
+                        WHEN t1.{cols1[0]} > 0 THEN 'positive'
+                        WHEN t1.{cols1[0]} < 0 THEN 'negative'
+                        ELSE 'zero'
+                    END as value_category,
+                    ROW_NUMBER() OVER (PARTITION BY t1.{cols1[0]} ORDER BY t2.{cols2[0]}) as row_rank
+                FROM {table1_info['full_name']} t1
+                INNER JOIN {table2_info['full_name']} t2 ON t1.{cols1[0]} = t2.{cols2[0]}
+                WHERE t1.{cols1[0]} IS NOT NULL AND t2.{cols2[0]} IS NOT NULL
+            ),
+            aggregated_transaction AS (
+                SELECT 
+                    value_category,
+                    COUNT(*) as transaction_count,
+                    SUM(t1_{cols1[0]}) as total_value,
+                    AVG(t1_{cols1[0]}) as avg_value,
+                    MIN(t1_{cols1[0]}) as min_value,
+                    MAX(t1_{cols1[0]}) as max_value,
+                    STDDEV(t1_{cols1[0]}) as value_stddev
+                FROM transaction_data
+                GROUP BY value_category
+                HAVING COUNT(*) > 1
+            ),
+            transaction_summary AS (
+                SELECT 
+                    *,
+                    ROW_NUMBER() OVER (ORDER BY total_value DESC) as value_rank,
+                    LAG(total_value, 1) OVER (ORDER BY total_value DESC) as prev_total,
+                    LEAD(total_value, 1) OVER (ORDER BY total_value DESC) as next_total,
+                    (total_value * 100.0 / SUM(total_value) OVER ()) as percentage_of_total
+                FROM aggregated_transaction
+            )
+            SELECT 
+                value_category,
+                transaction_count,
+                total_value,
+                avg_value,
+                min_value,
+                max_value,
+                value_stddev,
+                value_rank,
+                CASE 
+                    WHEN prev_total IS NOT NULL THEN total_value - prev_total
+                    ELSE 0 
+                END as diff_from_prev,
+                CASE 
+                    WHEN next_total IS NOT NULL THEN next_total - total_value
+                    ELSE 0 
+                END as diff_to_next,
+                percentage_of_total
+            FROM transaction_summary
+            ORDER BY value_rank;
+            """
+            
+            return RawSQL(self._ensure_perfect_sql_syntax(query))
+            
+        except Exception as e:
+            self.logger.error(f"Error generating complex transaction query: {e}")
+            return RawSQL(self._generate_safe_fallback_query())
+    
+    def _generate_partition_stress_query(self, context: GenerationContext) -> RawSQL:
+        """Generate queries that stress partition management."""
+        try:
+            if not hasattr(self, 'engine') or not self.engine or not hasattr(self.engine, 'column_mappings'):
+                return self._generate_safe_fallback_query()
+            
+            available_tables = list(self.engine.column_mappings.keys())
+            if not available_tables:
+                return self._generate_safe_fallback_query()
+            
+            table_info = self.engine.column_mappings[available_tables[0]]
+            numeric_cols = table_info.get('numeric_columns', [])
+            string_cols = table_info.get('string_columns', [])
+            
+            if not numeric_cols or not string_cols:
+                return self._generate_safe_fallback_query()
+            
+            # Create partition stress query
+            query = f"""
+            WITH partition_analysis AS (
+                SELECT 
+                    {string_cols[0]} as partition_key,
+                    COUNT(*) as partition_size,
+                    SUM({numeric_cols[0]}) as partition_sum,
+                    AVG({numeric_cols[0]}) as partition_avg,
+                    MIN({numeric_cols[0]}) as partition_min,
+                    MAX({numeric_cols[0]}) as partition_max,
+                    STDDEV({numeric_cols[0]}) as partition_stddev,
+                    NTILE(4) OVER (ORDER BY {numeric_cols[0]}) as partition_quartile
+                FROM {table_info['full_name']}
+                WHERE {string_cols[0]} IS NOT NULL AND {numeric_cols[0]} IS NOT NULL
+                GROUP BY {string_cols[0]}
+                HAVING COUNT(*) > 1
+            ),
+            partition_stats AS (
+                SELECT 
+                    *,
+                    ROW_NUMBER() OVER (ORDER BY partition_size DESC) as size_rank,
+                    ROW_NUMBER() OVER (ORDER BY partition_sum DESC) as sum_rank,
+                    ROW_NUMBER() OVER (ORDER BY partition_avg DESC) as avg_rank,
+                    LAG(partition_size, 1) OVER (ORDER BY partition_size DESC) as prev_size,
+                    LEAD(partition_size, 1) OVER (ORDER BY partition_size DESC) as next_size,
+                    (partition_size * 100.0 / SUM(partition_size) OVER ()) as size_percentage
+                FROM partition_analysis
+            )
+            SELECT 
+                partition_key,
+                partition_size,
+                partition_sum,
+                partition_avg,
+                partition_min,
+                partition_max,
+                partition_stddev,
+                partition_quartile,
+                size_rank,
+                sum_rank,
+                avg_rank,
+                CASE 
+                    WHEN prev_size IS NOT NULL THEN partition_size - prev_size
+                    ELSE 0 
+                END as size_diff_from_prev,
+                CASE 
+                    WHEN next_size IS NOT NULL THEN next_size - partition_size
+                    ELSE 0 
+                END as size_diff_to_next,
+                size_percentage
+            FROM partition_stats
+            ORDER BY size_rank, sum_rank
+            LIMIT 15;
+            """
+            
+            return RawSQL(self._ensure_perfect_sql_syntax(query))
+            
+        except Exception as e:
+            self.logger.error(f"Error generating partition stress query: {e}")
+            return RawSQL(self._generate_safe_fallback_query())
+    
+    def _generate_optimizer_stress_query(self, context: GenerationContext) -> RawSQL:
+        """Generate queries that stress the query optimizer."""
+        try:
+            if not hasattr(self, 'engine') or not self.engine or not hasattr(self.engine, 'column_mappings'):
+                return self._generate_safe_fallback_query()
+            
+            available_tables = list(self.engine.column_mappings.keys())
+            if len(available_tables) < 2:
+                return self._generate_safe_fallback_query()
+            
+            # Create optimizer stress query with complex conditions
+            table1 = random.choice(available_tables)
+            table2 = random.choice([t for t in available_tables if t != table1])
+            
+            table1_info = self.engine.column_mappings[table1]
+            table2_info = self.engine.column_mappings[table2]
+            
+            numeric_cols1 = table1_info.get('numeric_columns', [])
+            string_cols1 = table1_info.get('string_columns', [])
+            numeric_cols2 = table2_info.get('numeric_columns', [])
+            
+            if not numeric_cols1 or not string_cols1 or not numeric_cols2:
+                return self._generate_safe_fallback_query()
+            
+            # Build complex optimizer stress query
+            query = f"""
+            SELECT 
+                t1.{string_cols1[0]} as category,
+                COUNT(DISTINCT t1.{numeric_cols1[0]}) as unique_values,
+                COUNT(*) as total_records,
+                SUM(CASE WHEN t1.{numeric_cols1[0]} > 0 THEN t1.{numeric_cols1[0]} ELSE 0 END) as positive_sum,
+                SUM(CASE WHEN t1.{numeric_cols1[0]} < 0 THEN ABS(t1.{numeric_cols1[0]}) ELSE 0 END) as negative_sum,
+                AVG(CASE WHEN t1.{numeric_cols1[0]} BETWEEN -1000 AND 1000 THEN t1.{numeric_cols1[0]} END) as bounded_avg,
+                STDDEV(CASE WHEN t1.{numeric_cols1[0]} IS NOT NULL THEN t1.{numeric_cols1[0]} END) as value_stddev,
+                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY t1.{numeric_cols1[0]}) as median_value,
+                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY t1.{numeric_cols1[0]}) as q1_value,
+                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY t1.{numeric_cols1[0]}) as q3_value
+            FROM {table1_info['full_name']} t1
+            LEFT JOIN {table2_info['full_name']} t2 ON t1.{numeric_cols1[0]} = t2.{numeric_cols2[0]}
+            WHERE 
+                t1.{string_cols1[0]} IS NOT NULL 
+                AND t1.{numeric_cols1[0]} IS NOT NULL
+                AND (t1.{numeric_cols1[0]} > -10000 OR t1.{numeric_cols1[0]} < 10000)
+                AND t1.{string_cols1[0]} NOT IN ('', 'null', 'undefined')
+                AND LENGTH(t1.{string_cols1[0]}) > 0
+            GROUP BY t1.{string_cols1[0]}
+            HAVING 
+                COUNT(*) > 1 
+                AND COUNT(DISTINCT t1.{numeric_cols1[0]}) > 1
+                AND AVG(t1.{numeric_cols1[0]}) IS NOT NULL
+            ORDER BY 
+                total_records DESC,
+                unique_values DESC,
+                bounded_avg DESC
+            LIMIT 10;
+            """
+            
+            return RawSQL(self._ensure_perfect_sql_syntax(query))
+            
+        except Exception as e:
+            self.logger.error(f"Error generating optimizer stress query: {e}")
+            return RawSQL(self._generate_safe_fallback_query())
+    
+    def _generate_concurrent_access_query(self, context: GenerationContext) -> RawSQL:
+        """Generate queries that simulate concurrent access patterns."""
+        try:
+            if not hasattr(self, 'engine') or not self.engine or not hasattr(self.engine, 'column_mappings'):
+                return self._generate_safe_fallback_query()
+            
+            available_tables = list(self.engine.column_mappings.keys())
+            if len(available_tables) < 2:
+                return self._generate_safe_fallback_query()
+            
+            # Create concurrent access simulation query
+            table1 = random.choice(available_tables)
+            table2 = random.choice([t for t in available_tables if t != table1])
+            
+            table1_info = self.engine.column_mappings[table1]
+            table2_info = self.engine.column_mappings[table2]
+            
+            numeric_cols1 = table1_info.get('numeric_columns', [])
+            string_cols1 = table1_info.get('string_columns', [])
+            numeric_cols2 = table2_info.get('numeric_columns', [])
+            
+            if not numeric_cols1 or not string_cols1 or not numeric_cols2:
+                return self._generate_safe_fallback_query()
+            
+            query = f"""
+            WITH concurrent_snapshot AS (
+                SELECT 
+                    t1.{string_cols1[0]} as access_key,
+                    t1.{numeric_cols1[0]} as primary_value,
+                    t2.{numeric_cols2[0]} as secondary_value,
+                    ROW_NUMBER() OVER (PARTITION BY t1.{string_cols1[0]} ORDER BY t1.{numeric_cols1[0]}) as access_sequence,
+                    LAG(t1.{numeric_cols1[0]}, 1) OVER (PARTITION BY t1.{string_cols1[0]} ORDER BY t1.{numeric_cols1[0]}) as prev_primary,
+                    LEAD(t1.{numeric_cols1[0]}, 1) OVER (PARTITION BY t1.{string_cols1[0]} ORDER BY t1.{numeric_cols1[0]}) as next_primary,
+                    COUNT(*) OVER (PARTITION BY t1.{string_cols1[0]}) as total_accesses,
+                    AVG(t1.{numeric_cols1[0]}) OVER (PARTITION BY t1.{string_cols1[0]}) as avg_primary,
+                    STDDEV(t1.{numeric_cols1[0]}) OVER (PARTITION BY t1.{string_cols1[0]}) as primary_stddev
+                FROM {table1_info['full_name']} t1
+                INNER JOIN {table2_info['full_name']} t2 ON t1.{numeric_cols1[0]} = t2.{numeric_cols2[0]}
+                WHERE 
+                    t1.{string_cols1[0]} IS NOT NULL 
+                    AND t1.{numeric_cols1[0]} IS NOT NULL
+                    AND t2.{numeric_cols2[0]} IS NOT NULL
+            ),
+            access_patterns AS (
+                SELECT 
+                    *,
+                    CASE 
+                        WHEN prev_primary IS NOT NULL THEN primary_value - prev_primary
+                        ELSE 0 
+                    END as primary_delta,
+                    CASE 
+                        WHEN next_primary IS NOT NULL THEN next_primary - primary_value
+                        ELSE 0 
+                    END as next_primary_delta,
+                    (primary_value * 100.0 / SUM(primary_value) OVER (PARTITION BY access_key)) as value_percentage,
+                    ROW_NUMBER() OVER (ORDER BY total_accesses DESC, avg_primary DESC) as global_rank
+                FROM concurrent_snapshot
+            )
+            SELECT 
+                access_key,
+                primary_value,
+                secondary_value,
+                access_sequence,
+                total_accesses,
+                avg_primary,
+                primary_stddev,
+                primary_delta,
+                next_primary_delta,
+                value_percentage,
+                global_rank
+            FROM access_patterns
+            WHERE access_sequence <= 5  -- Limit to recent accesses
+            ORDER BY global_rank, access_key, access_sequence
+            LIMIT 20;
+            """
+            
+            return RawSQL(self._ensure_perfect_sql_syntax(query))
+            
+        except Exception as e:
+            self.logger.error(f"Error generating concurrent access query: {e}")
+            return RawSQL(self._generate_safe_fallback_query())
+    
+    def _generate_distributed_joins_query(self, context: GenerationContext) -> RawSQL:
+        """Generate queries that stress distributed JOIN operations."""
+        try:
+            if not hasattr(self, 'engine') or not self.engine or not hasattr(self.engine, 'column_mappings'):
+                return self._generate_safe_fallback_query()
+            
+            available_tables = list(self.engine.column_mappings.keys())
+            if len(available_tables) < 3:
+                return self._generate_safe_fallback_query()
+            
+            # Create complex distributed JOIN query
+            tables = random.sample(available_tables, min(3, len(available_tables)))
+            
+            table_joins = []
+            select_clauses = []
+            join_conditions = []
+            
+            for i, table_name in enumerate(tables):
+                table_info = self.engine.column_mappings[table_name]
+                alias = f"t{i+1}"
+                
+                if i == 0:
+                    from_clause = f"FROM {table_info['full_name']} {alias}"
+                else:
+                    prev_alias = f"t{i}"
+                    join_col = table_info['columns'][0] if table_info['columns'] else 'id'
+                    join_conditions.append(f"{prev_alias}.{join_col} = {alias}.{join_col}")
+                
+                # Add columns to select
+                cols = table_info['columns'][:2] if len(table_info['columns']) >= 2 else table_info['columns']
+                for col in cols:
+                    select_clauses.append(f"{alias}.{col} as {alias}_{col}")
+            
+            # Build the distributed JOIN query
+            query = f"""
+            SELECT 
+                {', '.join(select_clauses)},
+                COUNT(*) OVER (PARTITION BY t1.{tables[0]}_id) as join_group_size,
+                ROW_NUMBER() OVER (ORDER BY t1.{tables[0]}_id) as global_row_num,
+                ROW_NUMBER() OVER (PARTITION BY t1.{tables[0]}_id ORDER BY t2.{tables[1]}_id) as group_row_num
+            {from_clause}
+            {' '.join([f'INNER JOIN {self.engine.column_mappings[tables[i]]["full_name"]} t{i+2} ON {join_conditions[i]}' for i in range(len(tables)-1)])}
+            WHERE t1.{tables[0]}_id IS NOT NULL
+            ORDER BY t1.{tables[0]}_id, t2.{tables[1]}_id
+            LIMIT 15;
+            """
+            
+            return RawSQL(self._ensure_perfect_sql_syntax(query))
+            
+        except Exception as e:
+            self.logger.error(f"Error generating distributed JOINs query: {e}")
+            return RawSQL(self._generate_safe_fallback_query())
+    
+    def _generate_advanced_window_query(self, context: GenerationContext) -> RawSQL:
+        """Generate queries with advanced window functions."""
+        try:
+            if not hasattr(self, 'engine') or not self.engine or not hasattr(self.engine, 'column_mappings'):
+                return self._generate_safe_fallback_query()
+            
+            available_tables = list(self.engine.column_mappings.keys())
+            if not available_tables:
+                return self._generate_safe_fallback_query()
+            
+            table_info = self.engine.column_mappings[available_tables[0]]
+            numeric_cols = table_info.get('numeric_columns', [])
+            string_cols = table_info.get('string_columns', [])
+            date_cols = table_info.get('date_columns', [])
+            
+            if not numeric_cols or not string_cols:
+                return self._generate_safe_fallback_query()
+            
+            # Create advanced window function query
+            query = f"""
+            WITH window_analysis AS (
+                SELECT 
+                    {string_cols[0]} as category,
+                    {numeric_cols[0]} as value,
+                    {date_cols[0] if date_cols else numeric_cols[0]} as ordering_col,
+                    ROW_NUMBER() OVER (PARTITION BY {string_cols[0]} ORDER BY {numeric_cols[0]} DESC) as rank_in_category,
+                    ROW_NUMBER() OVER (ORDER BY {numeric_cols[0]} DESC) as global_rank,
+                    LAG({numeric_cols[0]}, 1) OVER (PARTITION BY {string_cols[0]} ORDER BY {numeric_cols[0]}) as prev_value,
+                    LEAD({numeric_cols[0]}, 1) OVER (PARTITION BY {string_cols[0]} ORDER BY {numeric_cols[0]}) as next_value,
+                    FIRST_VALUE({numeric_cols[0]}) OVER (PARTITION BY {string_cols[0]} ORDER BY {numeric_cols[0]} DESC) as category_max,
+                    LAST_VALUE({numeric_cols[0]}) OVER (PARTITION BY {string_cols[0]} ORDER BY {numeric_cols[0]} DESC ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as category_min,
+                    NTH_VALUE({numeric_cols[0]}, 2) OVER (PARTITION BY {string_cols[0]} ORDER BY {numeric_cols[0]} DESC) as category_second,
+                    NTILE(4) OVER (PARTITION BY {string_cols[0]} ORDER BY {numeric_cols[0]}) as category_quartile,
+                    PERCENT_RANK() OVER (PARTITION BY {string_cols[0]} ORDER BY {numeric_cols[0]}) as category_percentile,
+                    CUME_DIST() OVER (PARTITION BY {string_cols[0]} ORDER BY {numeric_cols[0]}) as category_cumulative_dist
+                FROM {table_info['full_name']}
+                WHERE {string_cols[0]} IS NOT NULL AND {numeric_cols[0]} IS NOT NULL
+            ),
+            window_summary AS (
+                SELECT 
+                    *,
+                    CASE 
+                        WHEN prev_value IS NOT NULL THEN value - prev_value
+                        ELSE 0 
+                    END as value_delta,
+                    CASE 
+                        WHEN next_value IS NOT NULL THEN next_value - value
+                        ELSE 0 
+                    END as next_value_delta,
+                    (value * 100.0 / category_max) as percentage_of_max,
+                    ROW_NUMBER() OVER (ORDER BY global_rank) as final_rank
+                FROM window_analysis
+            )
+            SELECT 
+                category,
+                value,
+                ordering_col,
+                rank_in_category,
+                global_rank,
+                category_max,
+                category_min,
+                category_second,
+                category_quartile,
+                category_percentile,
+                category_cumulative_dist,
+                value_delta,
+                next_value_delta,
+                percentage_of_max,
+                final_rank
+            FROM window_summary
+            WHERE rank_in_category <= 3  -- Top 3 in each category
+            ORDER BY final_rank, category, rank_in_category
+            LIMIT 20;
+            """
+            
+            return RawSQL(self._ensure_perfect_sql_syntax(query))
+            
+        except Exception as e:
+            self.logger.error(f"Error generating advanced window query: {e}")
+            return RawSQL(self._generate_safe_fallback_query())

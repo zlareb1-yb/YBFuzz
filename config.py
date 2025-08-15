@@ -609,7 +609,7 @@ def validate_config(config: Dict[str, Any]) -> bool:
                 logger.error(f"  - {error}")
             return False
         
-        logger.info("✅ Configuration validation completed successfully")
+        logger.info("SUCCESS: Configuration validation completed successfully")
         return True
         
     except Exception as e:
