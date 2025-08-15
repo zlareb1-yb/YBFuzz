@@ -183,10 +183,10 @@ class AdvancedMutator:
             ("yb_hash_code_int8(col)", "yb_hash_code(col)"),
             ("yb_hash_code_text(col)", "yb_hash_code(col)"),
             
-            # Optimization hint mutations
-            ("/*+ SET_VAR(enable_seqscan=off) */", "/*+ SET_VAR(enable_indexscan=off) */"),
-            ("/*+ SET_VAR(enable_hashjoin=off) */", "/*+ SET_VAR(enable_mergejoin=off) */"),
-            ("/*+ SET_VAR(random_page_cost=1000) */", "/*+ SET_VAR(cpu_tuple_cost=1000) */"),
+            # Optimization hint mutations (using proper pg_hint_plan format)
+            ("/*+ IndexScan(t) */", "/*+ SeqScan(t) */"),
+            ("/*+ HashJoin(t1 t2) */", "/*+ NestLoop(t1 t2) */"),
+            ("/*+ MergeJoin(t1 t2) */", "/*+ HashJoin(t1 t2) */"),
         ]
         
         # Distributed query mutations

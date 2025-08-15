@@ -2021,13 +2021,13 @@ class GrammarGenerator:
             
             # YugabyteDB-specific performance hints
             "SELECT * FROM information_schema.tables",
-            "SELECT /*+ LEADER_READ */ * FROM information_schema.tables",
-            "SELECT /*+ LEADER_WRITE */ * FROM information_schema.tables",
-            "SELECT /*+ PREFER_LOCAL */ * FROM information_schema.tables",
+            "SELECT /*+ IndexScan(t) */ * FROM information_schema.tables t",
+            "SELECT /*+ SeqScan(t) */ * FROM information_schema.tables t",
+            "SELECT /*+ NestLoop(t c) */ * FROM information_schema.tables t JOIN information_schema.columns c ON t.table_name = c.table_name",
             "SELECT * FROM information_schema.tables",
-            "SELECT /*+ NO_INDEX_SCAN */ * FROM information_schema.tables",
-            "SELECT /*+ INDEX_SCAN */ * FROM information_schema.tables",
-            "SELECT /*+ SEQUENTIAL_SCAN */ * FROM information_schema.tables",
+            "SELECT /*+ NoIndexScan(t) */ * FROM information_schema.tables t",
+            "SELECT /*+ IndexScan(t) */ * FROM information_schema.tables t",
+            "SELECT /*+ SeqScan(t) */ * FROM information_schema.tables t",
             
             # Complex aggregations
             "SELECT string_agg(table_name, ', ' ORDER BY table_name) FROM information_schema.tables",
@@ -2176,10 +2176,10 @@ class GrammarGenerator:
             
             # Leader election and failover tests
             "SELECT table_name, table_type FROM information_schema.tables WHERE table_name = 'information_schema.tables'",
-            "SELECT /*+ LEADER_READ */ table_name, table_type FROM information_schema.tables WHERE table_name = 'information_schema.tables'",
-            "SELECT /*+ LEADER_WRITE */ table_name, table_type FROM information_schema.tables WHERE table_name = 'information_schema.tables'",
-            "SELECT /*+ PREFER_LOCAL */ table_name, table_type FROM information_schema.tables WHERE table_name = 'information_schema.tables'",
-            "SELECT /*+ PREFER_REMOTE */ table_name, table_type FROM information_schema.tables WHERE table_name = 'information_schema.tables'",
+            "SELECT /*+ IndexScan(t) */ table_name, table_type FROM information_schema.tables t WHERE table_name = 'information_schema.tables'",
+            "SELECT /*+ SeqScan(t) */ table_name, table_type FROM information_schema.tables t WHERE table_name = 'information_schema.tables'",
+            "SELECT /*+ NestLoop(t c) */ t.table_name, t.table_type FROM information_schema.tables t JOIN information_schema.columns c ON t.table_name = c.table_name WHERE t.table_name = 'information_schema.tables'",
+            "SELECT /*+ HashJoin(t c) */ t.table_name, t.table_type FROM information_schema.tables t JOIN information_schema.columns c ON t.table_name = c.table_name WHERE t.table_name = 'information_schema.tables'",
             
             # Distributed aggregation tests
             "SELECT table_schema, COUNT(*) as schema_count FROM information_schema.tables GROUP BY table_schema ORDER BY table_schema",

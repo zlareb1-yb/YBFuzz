@@ -88,87 +88,66 @@ class QPGOracle(BaseOracle):
             return None
     
     def _create_hinted_query(self, query: str) -> Optional[str]:
-        """Create a query with YugabyteDB-specific optimization hints."""
+        """Create a query with proper pg_hint_plan hints for YugabyteDB."""
         try:
             if not query or len(query.strip()) < 10:
                 return None
             
-            # Optimization hints based on YugabyteDB internals
+            # Proper pg_hint_plan hints based on YugabyteDB documentation
             # These hints can reveal optimization bugs and inconsistencies
             
-            hints = [
-                # Basic optimization hints
-                "SET enable_seqscan = off;",
-                "SET enable_indexscan = on;",
-                "SET enable_bitmapscan = on;",
-                "SET enable_hashjoin = on;",
-                "SET enable_mergejoin = on;",
-                "SET enable_nestloop = on;",
-                
-                # YugabyteDB-specific hints
-                "SET yb_enable_optimizer_statistics = on;",
-                "SET yb_enable_optimizer_statistics = off;",
-                        # "SET yb_enable_distributed_execution = on;", # Not supported in this YugabyteDB version
-        # "SET yb_enable_distributed_execution = off;", # Not supported in this YugabyteDB version
-        # "SET yb_enable_parallel_execution = on;", # Not supported in this YugabyteDB version
-        # "SET yb_enable_parallel_execution = off;", # Not supported in this YugabyteDB version
-                
-                # Advanced optimization hints
-                "SET random_page_cost = 1.1;",
-                "SET random_page_cost = 4.0;",
-                "SET cpu_tuple_cost = 0.01;",
-                "SET cpu_tuple_cost = 0.1;",
-                "SET cpu_index_tuple_cost = 0.005;",
-                "SET cpu_index_tuple_cost = 0.05;",
-                
-                # Memory and work_mem hints
-                "SET work_mem = '1MB';",
-                "SET work_mem = '64MB';",
-                "SET shared_buffers = '128MB';",
-                "SET effective_cache_size = '256MB';",
-                
-                # Query planner hints
-                "SET constraint_exclusion = on;",
-                "SET constraint_exclusion = off;",
-                "SET from_collapse_limit = 8;",
-                "SET from_collapse_limit = 32;",
-                "SET join_collapse_limit = 8;",
-                "SET join_collapse_limit = 32;",
-                
-                # YugabyteDB transaction hints
-                        # "SET yb_transaction_priority = 0.5;", # Not supported in this YugabyteDB version
-        # "SET yb_transaction_priority = 0.9;", # Not supported in this YugabyteDB version
-        # "SET yb_transaction_priority = 0.1;", # Not supported in this YugabyteDB version
-                
-                # Advanced query planning hints
-                "SET enable_partitionwise_join = on;",
-                "SET enable_partitionwise_join = off;",
-                "SET enable_partitionwise_aggregate = on;",
-                "SET enable_partitionwise_aggregate = off;",
-                "SET enable_parallel_hash = on;",
-                "SET enable_parallel_hash = off;",
-                
-                # Cost estimation hints
-                "SET seq_page_cost = 1.0;",
-                "SET seq_page_cost = 2.0;",
-                "SET cpu_operator_cost = 0.0025;",
-                "SET cpu_operator_cost = 0.025;",
-                
-                # YugabyteDB-specific execution hints
-                "SET yb_enable_expression_pushdown = on;",
-                "SET yb_enable_expression_pushdown = off;",
-                        # "SET yb_enable_aggregate_pushdown = on;", # Not supported in this YugabyteDB version
-        # "SET yb_enable_aggregate_pushdown = off;", # Not supported in this YugabyteDB version
-        # "SET yb_enable_join_pushdown = on;", # Not supported in this YugabyteDB version
-        # "SET yb_enable_join_pushdown = off;" # Not supported in this YugabyteDB version
+            # Scan method hints
+            scan_hints = [
+                "/*+ SeqScan(t) */",
+                "/*+ NoSeqScan(t) */",
+                "/*+ IndexScan(t) */",
+                "/*+ NoIndexScan(t) */",
+                "/*+ IndexOnlyScan(t) */",
+                "/*+ NoIndexOnlyScan(t) */",
+                "/*+ BitmapScan(t) */"
             ]
             
-            # Select 3-5 random hints to apply
-            import random
-            selected_hints = random.sample(hints, random.randint(3, 5))
+            # Join method hints
+            join_hints = [
+                "/*+ HashJoin(t1 t2) */",
+                "/*+ NoHashJoin(t1 t2) */",
+                "/*+ MergeJoin(t1 t2) */",
+                "/*+ NoMergeJoin(t1 t2) */",
+                "/*+ NestLoop(t1 t2) */",
+                "/*+ NoNestLoop(t1 t2) */",
+                "/*+ YbBatchedNL(t1 t2) */",
+                "/*+ NoYbBatchedNL(t1 t2) */"
+            ]
             
-            # Build the hinted query
-            hinted_query = "\n".join(selected_hints) + "\n" + query
+            # Join order hints
+            join_order_hints = [
+                "/*+ Leading(t1 t2 t3) */",
+                "/*+ Leading(((t1 t2) t3)) */",
+                "/*+ Leading(t1 (t2 t3)) */"
+            ]
+            
+            # Planner configuration hints
+            planner_hints = [
+                "/*+ Set(enable_seqscan off) */",
+                "/*+ Set(enable_indexscan on) */",
+                "/*+ Set(enable_bitmapscan on) */",
+                "/*+ Set(enable_hashjoin on) */",
+                "/*+ Set(enable_mergejoin on) */",
+                "/*+ Set(enable_nestloop on) */",
+                "/*+ Set(enable_hashagg on) */",
+                "/*+ Set(enable_material on) */",
+                "/*+ Set(enable_sort on) */",
+                "/*+ Set(yb_prefer_bnl on) */",
+                "/*+ Set(yb_enable_batchednl on) */"
+            ]
+            
+            # Select 2-3 random hints to apply
+            import random
+            all_hints = scan_hints + join_hints + join_order_hints + planner_hints
+            selected_hints = random.sample(all_hints, random.randint(2, 3))
+            
+            # Build the hinted query with proper pg_hint_plan format
+            hinted_query = " ".join(selected_hints) + " " + query
             
             return hinted_query
             
@@ -350,11 +329,6 @@ class QPGOracle(BaseOracle):
         """Generate alternative execution plan hints to test."""
         # Valid YugabyteDB-specific plan hints (verified to work)
         yb_hints = [
-            ('LEADER_LOCAL', 'Force local leader execution'),
-            ('LEADER_READ', 'Force leader read execution'),
-            ('LEADER_WRITE', 'Force leader write execution'),
-            ('PREFER_LOCAL', 'Prefer local execution'),
-            ('PREFER_REMOTE', 'Prefer remote execution'),
             ('NO_INDEX_SCAN', 'Disable index scan (force sequential)'),
             ('INDEX_SCAN', 'Force index scan'),
             ('YB_BATCHED_NESTED_LOOP', 'Force batched nested loop join'),

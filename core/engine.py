@@ -408,8 +408,12 @@ class FuzzerEngine:
                 
                 # Execute the query with minimal overhead
                 try:
+                    # Log the actual SQL query being executed
+                    sql_query = query.to_sql()
+                    self.logger.debug(f"Executing query: {sql_query}")
+                    
                     # HIGH-PERFORMANCE MODE: Use high-performance execution for maximum throughput
-                    result = self.db_executor.execute_query(query.to_sql(), high_performance=True)
+                    result = self.db_executor.execute_query(sql_query, high_performance=True)
                     queries_executed += 1
                     queries_this_minute += 1
                     self.stats['queries_executed'] += 1
@@ -1401,6 +1405,9 @@ class FuzzerEngine:
             
             # Determine if we need to fetch results based on operation type
             fetch_results = op_type.endswith('_read') or 'SELECT' in query.upper()
+            
+            # Log the concurrent operation being executed
+            self.logger.debug(f"Concurrent operation [{op_type}] (session {session_id}): {query}")
             
             # Execute the operation
             result = self.db_executor.execute_query(query, fetch_results=fetch_results)

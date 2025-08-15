@@ -370,11 +370,11 @@ class DQPOracle(BaseOracle):
         variations = []
         
         try:
-            # Add different optimization levels or hints
+            # Add different optimization hints (using only safe, standard hints)
             optimization_variations = [
-                ('/*+ NO_OPTIMIZATION */', 'No optimization'),
-                ('/*+ OPTIMIZATION_LEVEL(0) */', 'Optimization level 0'),
-                ('/*+ OPTIMIZATION_LEVEL(1) */', 'Optimization level 1'),
+                ('/*+ INDEX_SCAN(t) */', 'Force index scan'),
+                ('/*+ SEQUENTIAL_SCAN(t) */', 'Force sequential scan'),
+                ('/*+ NESTED_LOOP(t1 t2) */', 'Force nested loop join'),
             ]
             
             for hint, description in optimization_variations:
